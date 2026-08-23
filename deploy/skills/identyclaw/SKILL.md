@@ -5,12 +5,12 @@ description: >-
   creating or verifying HOLA peer handshake lines, resolving Passport IDs,
   discovering agents, or reading IdentyClaw API documentation. Requires a NEAR
   implicit account and Passport mint on api.identyclaw.com. On Hermes, call the
-  host helper `idcp` (secrets under hermes-agent-app/secrets/).
+  host helper `idcp` (secrets under hermes-agents-app/secrets/).
 version: 1.1.0
 author: Discernible IO
 license: MIT
 compatibility: >-
-  Hermes Agent. Secrets in sibling hermes-agent-app. Host helper: idcp.
+  Hermes Agent. Secrets in sibling hermes-agents-app. Host helper: idcp.
 metadata:
   hermes:
     tags: [identity, hola, near, passport, api, enrollment, verification, rodit]
@@ -28,10 +28,10 @@ Hermes uses the **host login** path (not OpenClaw plugins). Call the `idcp` CLI 
 
 | Path | Role |
 |------|------|
-| `hermes-agent/deploy/` | Synced scripts (`idcp/`) |
-| `hermes-agent-app/secrets/near-credentials/*.json` | NEAR key |
-| `hermes-agent-app/secrets/identyclaw/jwt-*.txt` | Cached JWT per API host |
-| `hermes-agent-app/skills/identity/identyclaw/` | This skill |
+| `hermes-agents/deploy/` | Synced scripts (`idcp/`) |
+| `hermes-agents-app/secrets/near-credentials/*.json` | NEAR key |
+| `hermes-agents-app/secrets/identyclaw/jwt-*.txt` | Cached JWT per API host |
+| `hermes-agents-app/skills/identity/identyclaw/` | This skill |
 
 Inside the Hermes container, app dir is `/opt/data` and `idcp` is on PATH when installed.
 

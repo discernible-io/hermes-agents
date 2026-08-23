@@ -2,7 +2,7 @@
 /**
  * idcp — IdentyClaw Passport helpers for Hermes (host login path).
  *
- * Secrets live under hermes-agent-app/secrets/ (sibling app dir).
+ * Secrets live under hermes-agents-app/secrets/ (sibling app dir).
  *
  * Usage:
  *   idcp enroll

@@ -11,8 +11,8 @@ hermes_app_dir() {
     printf '%s' "$HERMES_APP_DIR"
     return
   fi
-  # HERMES_ROOT is …/hermes-agent/deploy → sibling app is …/hermes-agent-app
-  printf '%s' "$(cd "${HERMES_ROOT}/../.." && pwd)/hermes-agent-app"
+  # HERMES_ROOT is …/hermes-agents/deploy → sibling app is …/hermes-agents-app
+  printf '%s' "$(cd "${HERMES_ROOT}/../.." && pwd)/hermes-agents-app"
 }
 
 hermes_env_file() {

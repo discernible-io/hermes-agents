@@ -1,4 +1,4 @@
-# Hermes agents deploy wrapper — code only. Runtime config/state live in ../hermes-agent-app/.
+# Hermes agents deploy wrapper — code only. Runtime config/state live in ../hermes-agents-app/.
 
 # --- Secrets / local env (never commit) ---
 env.local

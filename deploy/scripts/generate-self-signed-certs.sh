@@ -22,7 +22,7 @@ for arg in "$@"; do
     *) [ -z "${CERT_DIR}" ] && CERT_DIR="${arg}" ;;
   esac
 done
-CERT_DIR="${CERT_DIR:-${REPO_ROOT}/../../hermes-agent-app/certs}"
+CERT_DIR="${CERT_DIR:-${REPO_ROOT}/../../hermes-agents-app/certs}"
 TLS_CN="${TLS_CN:-${HERMES_PUBLIC_HOST:-localhost}}"
 CERT_DAYS="${CERT_DAYS:-825}"
 

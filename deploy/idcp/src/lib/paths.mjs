@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 
-/** App-dir root: hermes-agent-app (HERMES_APP_DIR / IDENTYCLAW_HOME / HERMES_HOME). */
+/** App-dir root: hermes-agents-app (HERMES_APP_DIR / IDENTYCLAW_HOME / HERMES_HOME). */
 export function appDir() {
   const raw =
     process.env.IDENTYCLAW_HOME ||
@@ -14,10 +14,10 @@ export function appDir() {
     process.env.HERMES_HOME ||
     "";
   if (raw) return path.resolve(raw);
-  // deploy/idcp/src/lib → ../../.. = deploy/ → .. = hermes-agent/ → sibling app
+  // deploy/idcp/src/lib → ../../.. = deploy/ → .. = hermes-agents/ → sibling app
   const deployRoot = path.resolve(__dirname, "../../..");
   const repoRoot = path.resolve(deployRoot, "..");
-  return path.join(path.dirname(repoRoot), "hermes-agent-app");
+  return path.join(path.dirname(repoRoot), "hermes-agents-app");
 }
 
 export function secretsDir() {

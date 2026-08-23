@@ -2,7 +2,7 @@
 
 Host-side **Podman + IdentyClaw** operator scripts that live inside this fork at
 `deploy/`. Upstream Hermes agent source is the rest of the repository
-([`discernible-io/hermes-agent`](https://github.com/discernible-io/hermes-agent),
+([`discernible-io/hermes-agents`](https://github.com/discernible-io/hermes-agents),
 from [`NousResearch/hermes-agent`](https://github.com/NousResearch/hermes-agent)).
 
 **Secrets, memory, skills, and config stay in the sibling app directory** so you
@@ -10,9 +10,9 @@ can sync this checkout without carrying runtime state.
 
 | Path | Purpose |
 |------|---------|
-| `~/hermes-agent/` | This fork (upstream source + `deploy/` wrapper) |
-| `~/hermes-agent/deploy/` | Podman scripts, `idcp/`, nginx sidecar, IdentyClaw skill |
-| `~/hermes-agent-app/` | Runtime home (mounted at `/opt/data`) — `env.local`, `.env`, `config.yaml`, `skills/`, `memories/`, `sessions/` |
+| `~/hermes-agents/` | This fork (upstream source + `deploy/` wrapper) |
+| `~/hermes-agents/deploy/` | Podman scripts, `idcp/`, nginx sidecar, IdentyClaw skill |
+| `~/hermes-agents-app/` | Runtime home (mounted at `/opt/data`) — `env.local`, `.env`, `config.yaml`, `skills/`, `memories/`, `sessions/` |
 
 Override the app root with `HERMES_APP_DIR=/custom/path`.
 
@@ -22,12 +22,12 @@ One store per concern (aligned with discernible-io/docs configuration + CI/CD st
 
 | Store | Path | Holds | How gateway sees it |
 |-------|------|-------|---------------------|
-| **Non-secrets** | `~/hermes-agent-app/env.local` | Ports, `HERMES_DEPLOY_MODE`, `HERMES_PUBLIC_HOST`, email display prefs | Sourced by `hermes.sh` on the host only |
-| **Secrets** | `~/hermes-agent-app/.env` | API keys, `TELEGRAM_*`, `WEBHOOK_SECRET`, auth tokens | `podman run --env-file …/.env` (never `-e KEY=secret`) |
-| **File secrets** | `~/hermes-agent-app/secrets/` | Himalaya pass helpers, NEAR/IdentyClaw creds | Bind-mounted under `/opt/data/secrets` |
-| **Config** | `~/hermes-agent-app/config.yaml` | Non-secret Hermes settings; webhook host/port/routes only | Mounted as HERMES_HOME — **no secrets** |
-| **TLS** | `~/hermes-agent-app/certs/` | `fullchain.pem` / `privkey.pem` (LE or self-signed) | nginx sidecar `ro` mount; UID 101 via `podman unshare` |
-| **Nginx** | `~/hermes-agent-app/nginx/` | Rendered `nginx.conf` + copied `inc/` | All sidecar binds under APP_DIR (not the git clone) |
+| **Non-secrets** | `~/hermes-agents-app/env.local` | Ports, `HERMES_DEPLOY_MODE`, `HERMES_PUBLIC_HOST`, email display prefs | Sourced by `hermes.sh` on the host only |
+| **Secrets** | `~/hermes-agents-app/.env` | API keys, `TELEGRAM_*`, `WEBHOOK_SECRET`, auth tokens | `podman run --env-file …/.env` (never `-e KEY=secret`) |
+| **File secrets** | `~/hermes-agents-app/secrets/` | Himalaya pass helpers, NEAR/IdentyClaw creds | Bind-mounted under `/opt/data/secrets` |
+| **Config** | `~/hermes-agents-app/config.yaml` | Non-secret Hermes settings; webhook host/port/routes only | Mounted as HERMES_HOME — **no secrets** |
+| **TLS** | `~/hermes-agents-app/certs/` | `fullchain.pem` / `privkey.pem` (LE or self-signed) | nginx sidecar `ro` mount; UID 101 via `podman unshare` |
+| **Nginx** | `~/hermes-agents-app/nginx/` | Rendered `nginx.conf` + copied `inc/` | All sidecar binds under APP_DIR (not the git clone) |
 
 `./hermes.sh start` syncs any secret keys still present in `env.local` into `.env` when missing there, then starts with `--env-file`. Prefer editing `.env` directly for new secrets. `WEBHOOK_SECRET` must not appear in `config.yaml`.
 
@@ -36,9 +36,9 @@ Rootless Podman linger is enabled on every start (`scripts/ensure-podman-linger.
 ## Quick start
 
 ```bash
-cd ~/hermes-agent/deploy
+cd ~/hermes-agents/deploy
 chmod +x hermes.sh
-./hermes.sh init          # creates ~/hermes-agent-app + env.local, pulls image
+./hermes.sh init          # creates ~/hermes-agents-app + env.local, pulls image
 ./hermes.sh setup         # interactive wizard only (no gateway / no s6)
 ./hermes.sh start         # detached gateway, --restart always
 ./hermes.sh status
@@ -93,13 +93,13 @@ Host publish: Telegram webhook on **8443** (Telegram Bot API only accepts inboun
 | `11919` | container `9119` | Dashboard (optional) |
 
 ```bash
-# in hermes-agent-app/env.local (non-secrets)
+# in hermes-agents-app/env.local (non-secrets)
 HERMES_DEPLOY_MODE=pod
 HERMES_PUBLIC_HOST=hermes.example.com
 HERMES_INGRESS_PORT=8443
 HERMES_API_PORT=11642
 
-# in hermes-agent-app/.env (secrets — --env-file)
+# in hermes-agents-app/.env (secrets — --env-file)
 WEBHOOK_SECRET=$(openssl rand -hex 32)
 WEBHOOK_ENABLED=true
 WEBHOOK_PORT=8644
@@ -134,9 +134,9 @@ Host-login path (portable brief — not OpenClaw plugins). Secrets stay in the *
 | Path | Role |
 |------|------|
 | `hermes-agent/deploy/idcp/` | Synced helper CLI |
-| `hermes-agent-app/secrets/near-credentials/` | NEAR key JSON |
-| `hermes-agent-app/secrets/identyclaw/` | JWT cache (per API host) |
-| `hermes-agent-app/skills/identity/identyclaw/` | Agent skill |
+| `hermes-agents-app/secrets/near-credentials/` | NEAR key JSON |
+| `hermes-agents-app/secrets/identyclaw/` | JWT cache (per API host) |
+| `hermes-agents-app/skills/identity/identyclaw/` | Agent skill |
 
 ```bash
 ./hermes.sh idcp-install
@@ -172,7 +172,7 @@ Upstream ask for generic `$HERMES_HOME/bin` sandbox mounts:
 ## Egress / terminal sandboxes
 
 By default `./hermes.sh start` (and setup) write `proxy.enabled: false` into
-`hermes-agent-app/config.yaml`. That lives on the volume, so image rebuilds keep
+`hermes-agents-app/config.yaml`. That lives on the volume, so image rebuilds keep
 terminal/`idcp` sandboxes working without iron-proxy.
 
 Docker terminal backend: the gateway dual-mounts the app dir at its **host path**
@@ -188,7 +188,7 @@ To enable iron-proxy later: set `HERMES_EGRESS=1` in `env.local`, run
 Agent mailbox for read/write from terminal sandboxes (not the Email gateway adapter).
 
 ```bash
-# in hermes-agent-app/env.local
+# in hermes-agents-app/env.local
 HERMES_EMAIL=hermes@agenthood.me
 HERMES_EMAIL_DISPLAY_NAME=Hermes Trimegisto
 # HERMES_MAIL_PASSWORD=…   # or pass interactively:
@@ -226,18 +226,26 @@ Do **not** use `hermes update` inside the container. Pull and recreate:
 
 ## Ownership note (rootless Podman)
 
-While the gateway runs, the image owns files in `~/hermes-agent-app` as the container `hermes` UID. Do **not** chown that tree back to the host while it is running (`.env` becomes unreadable and the gateway crashes).
+While the gateway runs, the image owns files in `~/hermes-agents-app` as the container `hermes` UID. Do **not** chown that tree back to the host while it is running (`.env` becomes unreadable and the gateway crashes).
 
 - Edit secrets / config on the host after `./hermes.sh stop` (stop restores host ownership), or use `./hermes.sh exec -- …` against the live container.
 - `./hermes.sh own host` also reclaims ownership when stopped.
 
-## Migrating from `hermes-agents` / `hermes-agents-app`
+## Migrating from older names
 
-If you previously used the standalone `hermes-agents` wrapper:
+This GitHub repo is [`discernible-io/hermes-agents`](https://github.com/discernible-io/hermes-agents). Clone into `~/hermes-agents`. Runtime state stays in `~/hermes-agents-app/`.
+
+If you already cloned the previous GitHub name (`discernible-io/hermes-agent` → `~/hermes-agent`):
 
 ```bash
-# optional: keep existing runtime state under the new default name
-mv ~/hermes-agents-app ~/hermes-agent-app
-# or: export HERMES_APP_DIR=~/hermes-agents-app
-cd ~/hermes-agent/deploy && ./hermes.sh status
+mv ~/hermes-agent ~/hermes-agents   # optional; local folder name is yours
+git -C ~/hermes-agents remote set-url origin git@github.com:discernible-io/hermes-agents.git
+```
+
+If you already have runtime state under the previous app-dir name (`~/hermes-agent-app`):
+
+```bash
+mv ~/hermes-agent-app ~/hermes-agents-app
+# or: export HERMES_APP_DIR=~/hermes-agent-app
+cd ~/hermes-agents/deploy && ./hermes.sh status
 ```

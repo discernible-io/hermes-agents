@@ -19,8 +19,8 @@ Stock Nous Hermes does **not** ship IdentyClaw Passport / RODiT. This repo alrea
 | Layer | Role | Location |
 |-------|------|----------|
 | **CLI** | Enroll, JWT session, HOLA, API calls | Synced `idcp/` → mounted `/opt/idcp` |
-| **Skill** | Agent instructions: call `idcp`, never invent crypto / paste JWTs | `skills/identyclaw/SKILL.md` → copied to `hermes-agent-app/skills/identity/identyclaw/` |
-| **Secrets** | NEAR keys + JWT cache | `hermes-agent-app/secrets/` only (never in image or git) |
+| **Skill** | Agent instructions: call `idcp`, never invent crypto / paste JWTs | `skills/identyclaw/SKILL.md` → copied to `hermes-agents-app/skills/identity/identyclaw/` |
+| **Secrets** | NEAR keys + JWT cache | `hermes-agents-app/secrets/` only (never in image or git) |
 
 Code stays in the synced repo; runtime identity stays in the sibling app dir (`HERMES_APP_DIR`).
 
@@ -108,15 +108,15 @@ Mention IdentyClaw only as one consumer example.
 
 ## Comparison: this wrapper vs stock Nous Hermes
 
-| Concern | Stock [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) | This fork (`discernible-io/hermes-agent` + `deploy/`) |
+| Concern | Stock [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) | This fork (`discernible-io/hermes-agents` + `deploy/`) |
 |---------|----------------------------------------------------------------------------------|--------------------------------------------|
 | Runtime image | `nousresearch/hermes-agent` (source in upstream) | Same image; **no fork** of Hermes |
-| Host orchestration | `docker compose` / install.sh / desktop | Rootless **Podman** via `deploy/hermes.sh` + sibling `hermes-agent-app/` |
+| Host orchestration | `docker compose` / install.sh / desktop | Rootless **Podman** via `deploy/hermes.sh` + sibling `hermes-agents-app/` |
 | IdentyClaw Passport | Not included | `idcp/` CLI + `skills/identyclaw/` + `idcp-install` |
 | Himalaya / Migadu | Not included | `himalaya-install` + email skill |
 | Webhook TLS ingress | Built-in webhook adapter; TLS is your problem | Optional nginx sidecar pod (`HERMES_DEPLOY_MODE=pod`) |
 | Sandbox `bin/` PATH | Local terminal only (until #83805) | Wrapper injects PATH + `terminal.docker_volumes` today |
-| Secrets | Under `HERMES_HOME` | Under `hermes-agent-app/secrets/` (never in synced repo) |
+| Secrets | Under `HERMES_HOME` | Under `hermes-agents-app/secrets/` (never in synced repo) |
 
 Practitioners who only want Passport on stock Hermes can copy `idcp/` + the skill and follow the upstream sidecar guide once #83805 lands; until then use `./hermes.sh idcp-install` in this wrapper.
 

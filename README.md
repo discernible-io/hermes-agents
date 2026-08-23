@@ -15,11 +15,11 @@ federated peer API** built from
 example [api.lastcradle.io](https://api.lastcradle.io) — **with no API key and
 no extra credentials**. The Passport *is* the credential.
 
-| | [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) (upstream) | This fork ([discernible-io/hermes-agent](https://github.com/discernible-io/hermes-agent)) |
+| | [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) (upstream) | This fork ([discernible-io/hermes-agents](https://github.com/discernible-io/hermes-agents)) |
 |---|---|---|
 | Runtime image | `nousresearch/hermes-agent` | Same image — we do not fork Hermes core |
 | Host install | `install.sh` / Docker / desktop | Rootless **Podman** via [`deploy/hermes.sh`](./deploy/README.md) |
-| Runtime state | `~/.hermes/` | Sibling `~/hermes-agent-app/` (`./deploy/hermes.sh init`) |
+| Runtime state | `~/.hermes/` | Sibling `~/hermes-agents-app/` (`./deploy/hermes.sh init`) |
 | Agent identity | Not included | IdentyClaw Passport + `idcp` (enroll, JWT session, HOLA) |
 | Calling peer APIs | Vendor API keys in `.env` | Prove Passport key possession; peer mints a JWT. No API keys. |
 | Email / TLS ingress | Bring your own | Himalaya + optional nginx sidecar |
@@ -75,7 +75,7 @@ You mint a Passport **once** at IdentyClaw home. Peers resolve you by a stable 1
 | **Home** | [api.identyclaw.com](https://api.identyclaw.com) | Issues Passport / HOLA identity. Does **not** authorize third-party APIs. |
 | **Peer** | e.g. [api.lastcradle.io](https://api.lastcradle.io), or any API from [api-idc](https://github.com/discernible-io/api-idc) | Same login challenge (`GET /api/login/timestamp` → `POST /api/login`). Mints a JWT valid **only** for that peer. |
 
-Clients remint a JWT **per peer**. A home JWT is not accepted at lastcradle (or any other peer), and peer tokens are not portable across peers. `idcp` caches each host’s JWT under `~/hermes-agent-app/secrets/identyclaw/` and never prints it to the model.
+Clients remint a JWT **per peer**. A home JWT is not accepted at lastcradle (or any other peer), and peer tokens are not portable across peers. `idcp` caches each host’s JWT under `~/hermes-agents-app/secrets/identyclaw/` and never prints it to the model.
 
 ```text
 ┌─────────────────────┐         ┌──────────────────────────┐
@@ -99,20 +99,20 @@ Enrollment contract: [guide:enrollment](https://api.identyclaw.com/.well-known/e
 Requires rootless [Podman](https://podman.io/). Full operator reference: [`deploy/README.md`](./deploy/README.md).
 
 ```bash
-git clone https://github.com/discernible-io/hermes-agent.git ~/hermes-agent
-cd ~/hermes-agent/deploy
+git clone https://github.com/discernible-io/hermes-agents.git ~/hermes-agents
+cd ~/hermes-agents/deploy
 chmod +x hermes.sh
-./hermes.sh init          # creates ~/hermes-agent-app + env.local, pulls image
+./hermes.sh init          # creates ~/hermes-agents-app + env.local, pulls image
 ./hermes.sh setup         # interactive wizard (finish before start)
 ./hermes.sh start         # detached gateway
 ./hermes.sh idcp-install  # IdentyClaw helper CLI + skill into the app dir
 ```
 
-Runtime state lives in `~/hermes-agent-app/` (override with `HERMES_APP_DIR`).
+Runtime state lives in `~/hermes-agents-app/` (override with `HERMES_APP_DIR`).
 
 ### 2. Create a NEAR implicit account
 
-Hermes uses the host-login path (`idcp`), not OpenClaw plugins. Enrollment writes credentials under `~/hermes-agent-app/secrets/near-credentials/`.
+Hermes uses the host-login path (`idcp`), not OpenClaw plugins. Enrollment writes credentials under `~/hermes-agents-app/secrets/near-credentials/`.
 
 ```bash
 ./hermes.sh idcp enroll
@@ -166,10 +166,10 @@ Day-to-day on home: `idcp create_hola` / `idcp verify_hola` / `idcp request …`
 
 | Path | Role |
 |------|------|
-| `~/hermes-agent/deploy/` | Podman scripts + `idcp/` |
-| `~/hermes-agent-app/secrets/near-credentials/` | NEAR key JSON |
-| `~/hermes-agent-app/secrets/identyclaw/` | JWT cache **per API host** |
-| `~/hermes-agent-app/skills/identity/identyclaw/` | Agent skill |
+| `~/hermes-agents/deploy/` | Podman scripts + `idcp/` |
+| `~/hermes-agents-app/secrets/near-credentials/` | NEAR key JSON |
+| `~/hermes-agents-app/secrets/identyclaw/` | JWT cache **per API host** |
+| `~/hermes-agents-app/skills/identity/identyclaw/` | Agent skill |
 
 ### 6. Log in to any federated peer (no API key)
 
@@ -215,7 +215,7 @@ Tell clients: login against **your** `apiEndpoint`; never send a home JWT there.
 
 ## Quick Install
 
-> **This fork:** prefer the Podman path in [step 1](#1-install-this-repo-podman) (`./deploy/hermes.sh`), not the upstream one-liner below. The curl/PowerShell installers are stock [Nous Hermes](https://github.com/NousResearch/hermes-agent) and do **not** include `idcp`, Passport, or the sibling `hermes-agent-app/` layout.
+> **This fork:** prefer the Podman path in [step 1](#1-install-this-repo-podman) (`./deploy/hermes.sh`), not the upstream one-liner below. The curl/PowerShell installers are stock [Nous Hermes](https://github.com/NousResearch/hermes-agent) and do **not** include `idcp`, Passport, or the sibling `hermes-agents-app/` layout.
 
 ### Linux, macOS, WSL2, Termux
 
@@ -302,7 +302,7 @@ hermes doctor       # Diagnose any issues
 
 📖 **[Full documentation →](https://hermes-agent.nousresearch.com/docs/)**
 
-On this fork, prefer `./hermes.sh chat` and `./hermes.sh exec -- hermes …` against `~/hermes-agent-app/`. Do not run `hermes update` inside the container — use `./hermes.sh pull && ./hermes.sh start`.
+On this fork, prefer `./hermes.sh chat` and `./hermes.sh exec -- hermes …` against `~/hermes-agents-app/`. Do not run `hermes update` inside the container — use `./hermes.sh pull && ./hermes.sh start`.
 
 ---
 
@@ -442,7 +442,7 @@ scripts/run_tests.sh
 - 🪪 [IdentyClaw home](https://api.identyclaw.com) · [purchase](https://purchase.identyclaw.com)
 - 🧩 Federated peer template: [discernible-io/api-idc](https://github.com/discernible-io/api-idc)
 - 🎮 Example peer: [api.lastcradle.io](https://api.lastcradle.io)
-- 🐛 Fork issues: [discernible-io/hermes-agent](https://github.com/discernible-io/hermes-agent/issues)
+- 🐛 Fork issues: [discernible-io/hermes-agents](https://github.com/discernible-io/hermes-agents/issues)
 
 **Upstream Hermes**
 

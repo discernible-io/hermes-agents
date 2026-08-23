@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Hermes Agent — Podman operator CLI (sibling app-dir layout).
 #
-# Repo (synced):   ~/hermes-agent  — wrapper lives in deploy/
-# Runtime (local): ~/hermes-agent-app  → mounted at /opt/data
+# Repo (synced):   ~/hermes-agents  — wrapper lives in deploy/
+# Runtime (local): ~/hermes-agents-app  → mounted at /opt/data
 #
 # Usage:
 #   ./hermes.sh init
@@ -517,7 +517,7 @@ cmd_himalaya_password() {
       echo >&2
     else
       echo "usage: ./hermes.sh himalaya-password [PASSWORD]" >&2
-      echo "  or set HERMES_MAIL_PASSWORD in hermes-agent-app/env.local" >&2
+      echo "  or set HERMES_MAIL_PASSWORD in hermes-agents-app/env.local" >&2
       exit 1
     fi
   fi
