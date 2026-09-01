@@ -182,6 +182,7 @@ cmd_start() {
 
   if hermes_is_pod_mode; then
     require_pod_webhook_env
+    ensure_pod_internal_listen_ports
     export WEBHOOK_ENABLED=true
     export WEBHOOK_PORT="${WEBHOOK_PORT:-8644}"
     # Ensure toggles land in .env after pod-mode defaults.

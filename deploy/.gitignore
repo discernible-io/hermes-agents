@@ -6,13 +6,32 @@ env.local
 .env.*
 !.env.example
 
-# --- Accidental state inside the checkout ---
+# --- Accidental runtime state inside the checkout (normally in HERMES_APP_DIR) ---
 **/secrets/
 **/sessions/
 **/memories/
 **/logs/
+**/sandboxes/
+**/pairing/
+**/certs/
+**/bin/
 config.yaml
 config.yaml.bak*
+auth.json
+gateway_state.json
+gateway.lock
+gateway.pid
+webhook_subscriptions.json
+state.db
+state.db-*
+*.db-wal
+*.db-shm
+kanban.db*
+feishu_comment_rules.json
+feishu_comment_pairing.json
+
+# Rendered nginx sidecar config (source templates live in nginx/inc/)
+nginx/nginx.conf
 
 # --- Node (idcp deps — run ./hermes.sh idcp-install per host) ---
 idcp/node_modules/

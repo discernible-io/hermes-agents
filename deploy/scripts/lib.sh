@@ -872,6 +872,28 @@ require_pod_webhook_env() {
   fi
 }
 
+# nginx owns HERMES_INGRESS_PORT (8443 for Telegram). The adapter must listen on
+# a different pod-local port (8643) so nginx can proxy to it.
+ensure_pod_internal_listen_ports() {
+  hermes_is_pod_mode || return 0
+  local envf ingress telegram
+  envf="$(hermes_gateway_env_file)"
+  ingress="${HERMES_INGRESS_PORT:-8443}"
+  telegram="${TELEGRAM_WEBHOOK_PORT:-8443}"
+  if [[ "$telegram" == "$ingress" ]]; then
+    telegram=8643
+    if [[ -f "$envf" ]]; then
+      if grep -qE '^TELEGRAM_WEBHOOK_PORT=' "$envf" 2>/dev/null; then
+        sed -i "s|^TELEGRAM_WEBHOOK_PORT=.*|TELEGRAM_WEBHOOK_PORT=${telegram}|" "$envf"
+      else
+        printf 'TELEGRAM_WEBHOOK_PORT=%s\n' "$telegram" >>"$envf"
+      fi
+    fi
+    export TELEGRAM_WEBHOOK_PORT="$telegram"
+    echo "Pod mode: TELEGRAM_WEBHOOK_PORT=${telegram} (nginx TLS on ${ingress})" >&2
+  fi
+}
+
 ensure_webhook_pod_layout() {
   local app
   app="$(hermes_app_dir)"
