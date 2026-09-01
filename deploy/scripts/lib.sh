@@ -262,7 +262,7 @@ export HERMES_HOME="${HERMES_HOME:-/opt/data}"
 for cand in \
   "${IDENTYCLAW_IDCP:-}" \
   /opt/idcp/bin/idcp.mjs \
-  "$(dirname "$0")/../../hermes-agent/deploy/idcp/bin/idcp.mjs"
+  "$(dirname "$0")/../../hermes-agents/deploy/idcp/bin/idcp.mjs"
 do
   [ -n "$cand" ] && [ -f "$cand" ] && exec node "$cand" "$@"
 done
@@ -784,27 +784,31 @@ himalaya_test() {
   echo "Testing Himalaya IMAP + SMTP (pin ${smtp_ip}) via sandbox-equivalent mounts ..."
   # Run himalaya from the gateway container with sandbox HOME + secrets mounts paths.
   if container_is_running "$name"; then
-    podman exec -u hermes \
+    podman exec -i -u hermes \
       -e "HERMES_HOME=${app}" \
       -e "HOME=${app}/sandboxes/docker/default/home" \
       -e "PATH=${app}/bin:/opt/data/bin:/usr/bin:/bin" \
       -e "MIGADU_SMTP_IPV4=${smtp_ip}" \
       "$name" \
-      sh -c '
+      sh -s <<'EOS'
 set -e
 himalaya --version
 himalaya folder list
 himalaya envelope list --folder INBOX --page-size 5 --output json | head -c 2000
 echo
 # SMTP reachability (the send failure mode: IMAP OK, SMTP hang).
-smtp_ip="${MIGADU_SMTP_IPV4:-141.94.97.118}"
-if python3 -c "import socket; socket.create_connection(('${smtp_ip}', 587), timeout=8).close()"; then
-  echo "SMTP ${smtp_ip}:587 reachable"
-else
-  echo "ERROR: SMTP ${smtp_ip}:587 unreachable — sends will hang" >&2
-  exit 1
-fi
+python3 - <<'PY'
+import os, socket, sys
+ip = os.environ.get("MIGADU_SMTP_IPV4") or "141.94.97.118"
+try:
+    socket.create_connection((ip, 587), timeout=8).close()
+except OSError as exc:
+    print(f"ERROR: SMTP {ip}:587 unreachable — sends will hang ({exc})", file=sys.stderr)
+    sys.exit(1)
+print(f"SMTP {ip}:587 reachable")
+PY
 # Stale sandbox ExtraHosts still pinning a dead Migadu IP?
+smtp_ip="${MIGADU_SMTP_IPV4:-141.94.97.118}"
 if command -v docker >/dev/null 2>&1; then
   stale="$(docker ps -aq --filter label=hermes-agent=1 2>/dev/null || true)"
   for cid in $stale; do
@@ -822,7 +826,7 @@ if command -v docker >/dev/null 2>&1; then
     esac
   done
 fi
-'
+EOS
   else
     local z
     z="$(selinux_mount_suffix)"
