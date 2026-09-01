@@ -24,6 +24,7 @@ host="${HERMES_PUBLIC_HOST:-}"
 ingress_port="${HERMES_INGRESS_PORT:-8443}"
 webhook_port="${WEBHOOK_PORT:-8644}"
 telegram_port="${TELEGRAM_WEBHOOK_PORT:-8643}"
+a2a_port="${A2A_PORT:-9900}"
 
 mkdir -p "$(dirname "$out")"
 
@@ -56,7 +57,11 @@ http {
         server 127.0.0.1:${telegram_port};
     }
 
-    # Hermes — webhooks + Telegram @ ${host}:${ingress_port}
+    upstream hermes_a2a {
+        server 127.0.0.1:${a2a_port};
+    }
+
+    # Hermes — webhooks + Telegram + A2A @ ${host}:${ingress_port}
     server {
         listen ${ingress_port} ssl;
         http2 on;
@@ -89,6 +94,26 @@ http {
             limit_req zone=hermes_public burst=120 nodelay;
             include /etc/nginx/inc/hermes-proxy.inc;
             proxy_pass http://hermes_telegram;
+        }
+
+        location ^~ /.well-known/ {
+            limit_req zone=hermes_ingress burst=240 nodelay;
+            limit_req zone=hermes_public burst=120 nodelay;
+            include /etc/nginx/inc/hermes-proxy.inc;
+            proxy_pass http://hermes_a2a;
+        }
+
+        location = /metrics {
+            limit_req zone=hermes_ingress burst=120 nodelay;
+            include /etc/nginx/inc/hermes-proxy.inc;
+            proxy_pass http://hermes_a2a;
+        }
+
+        location = / {
+            limit_req zone=hermes_ingress burst=240 nodelay;
+            limit_req zone=hermes_public burst=120 nodelay;
+            include /etc/nginx/inc/hermes-proxy.inc;
+            proxy_pass http://hermes_a2a;
         }
 
         location / {
