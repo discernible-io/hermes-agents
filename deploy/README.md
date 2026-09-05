@@ -39,12 +39,17 @@ Rootless Podman linger is enabled on every start (`scripts/ensure-podman-linger.
 cd ~/hermes-agents/deploy
 chmod +x hermes.sh
 ./hermes.sh init          # creates ~/hermes-agents-app + env.local, pulls image
-./hermes.sh setup         # Hermes wizard + IdentyClaw Passport (enroll → purchase → session)
+./hermes.sh setup         # populate -app (Hermes wizard); last: auto NEAR account + mint guide
 ./hermes.sh start         # detached gateway, --restart always
 ./hermes.sh status
 ```
 
-Run **setup and start as separate commands** (do not chain them). Setup is interactive: Hermes API/keys first, then IdentyClaw (NEAR enroll, mint pause at [purchase.identyclaw.com](https://purchase.identyclaw.com), home session). Resume a paused Passport step with `./hermes.sh idcp-setup`.
+Run **setup and start as separate commands** (do not chain them). Setup is
+interactive: Hermes API/keys first, then Passport fields, then an **automatic**
+NEAR implicit account (no operator input), mint pause at
+[purchase.identyclaw.com](https://purchase.identyclaw.com) with collected fields
+marked **[selected]**, then home session. Resume a paused Passport step with
+`./hermes.sh idcp-setup`. After mint, `./hermes.sh chat` or Telegram.
 
 Uses rootless **Podman** (same host pattern as `identyclaw-agents`). Image: `docker.io/nousresearch/hermes-agent:latest`.
 
@@ -55,7 +60,7 @@ AlmaLinux / RHEL: `podman-restart.service` only restarts containers with policy 
 | Command | What it does |
 |---------|----------------|
 | `./hermes.sh init` | App layout + pull image |
-| `./hermes.sh setup` | Hermes wizard **then** IdentyClaw Passport path |
+| `./hermes.sh setup` | Populate -app (Hermes wizard); last: auto NEAR enroll + mint guide |
 | `./hermes.sh start` | Recreate gateway container |
 | `./hermes.sh stop` | Stop and remove container |
 | `./hermes.sh status` | Paths + container status |
@@ -63,7 +68,7 @@ AlmaLinux / RHEL: `podman-restart.service` only restarts containers with policy 
 | `./hermes.sh pull` | Pull newer image (then `start`) |
 | `./hermes.sh chat` | Ephemeral interactive CLI against the app dir |
 | `./hermes.sh exec -- …` | Run a command in the live container (or one-shot) |
-| `./hermes.sh idcp-setup` | IdentyClaw only: install → enroll → purchase guide → session |
+| `./hermes.sh idcp-setup` | Passport only: auto enroll → purchase guide → session |
 | `./hermes.sh idcp-install` | Install IdentyClaw `idcp` helper + skill into app dir |
 | `./hermes.sh idcp …` | Passport ops (`enroll`, `ensure_session`, `create_hola`, …) |
 | `./hermes.sh himalaya-install` | Install Himalaya CLI + Migadu config into app dir |

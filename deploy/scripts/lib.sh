@@ -1093,4 +1093,141 @@ stop_hermes_pod_stack() {
   fi
 }
 
+identyclaw_format_contact_uri() {
+  local explicit="${1:-}" tg="${2:-}" email="${3:-}" domain
+  explicit="${explicit//[[:space:]]/}"
+  if [[ -n "$explicit" ]]; then
+    printf '%s' "$explicit"
+    return 0
+  fi
+  tg="${tg#@}"
+  tg="${tg//[[:space:]]/}"
+  if [[ -n "$tg" ]]; then
+    printf 'telegram:telegram.com:@%s' "$tg"
+    return 0
+  fi
+  email="${email//[[:space:]]/}"
+  if [[ -n "$email" && "$email" == *@* ]]; then
+    domain="${email#*@}"
+    printf 'email:%s:%s' "$domain" "$email"
+    return 0
+  fi
+}
+
+print_passport_field() {
+  local name="$1" value="${2:-}" collect_hint="${3:-enter on purchase.identyclaw.com}"
+  if [[ -n "$value" ]]; then
+    printf '  %-22s [selected]  %s\n' "$name" "$value"
+  else
+    printf '  %-22s [collect]   %s\n' "$name" "$collect_hint"
+  fi
+}
+
+print_passport_webhook_field() {
+  local name="$1" value="${2:-}"
+  if [[ -z "$value" ]]; then
+    print_passport_field "$name" "" "public HTTPS A2A / webhook URL"
+    return 0
+  fi
+  if [[ "$value" == *127.0.0.1* || "$value" == *localhost* ]]; then
+    printf '  %-22s [collect]   %s  (loopback — paste a public HTTPS URL on the portal)\n' "$name" "$value"
+    return 0
+  fi
+  print_passport_field "$name" "$value" ""
+}
+
+identyclaw_prompt_with_default() {
+  local prompt="$1" default="${2:-}" var=""
+  if [[ ! -t 0 ]] || [[ "${SKIP_SETUP_PROMPTS:-0}" == "1" ]]; then
+    printf '%s' "$default"
+    return 0
+  fi
+  if [[ -n "$default" ]]; then
+    read -r -p "${prompt} [${default}]: " var || true
+  else
+    read -r -p "${prompt}: " var || true
+  fi
+  printf '%s' "${var:-$default}"
+}
+
+hermes_passport_webhook_url() {
+  local host port url
+  if [[ -n "${IDENTYCLAW_WEBHOOK_URL:-}" ]]; then
+    printf '%s' "$IDENTYCLAW_WEBHOOK_URL"
+    return 0
+  fi
+  host="${HERMES_PUBLIC_HOST:-}"
+  port="${HERMES_INGRESS_PORT:-${HERMES_TELEGRAM_PORT:-8443}}"
+  if [[ -n "$host" ]]; then
+    printf 'https://%s:%s' "$host" "$port"
+    return 0
+  fi
+  url="${TELEGRAM_WEBHOOK_URL:-${WEBHOOK_PUBLIC_URL:-}}"
+  if [[ -n "$url" ]]; then
+    printf '%s' "$url"
+  fi
+}
+
+hermes_passport_contact_uri() {
+  identyclaw_format_contact_uri \
+    "${IDENTYCLAW_CONTACT_URI:-}" \
+    "${TELEGRAM_BOT_USERNAME:-}" \
+    "${HERMES_EMAIL:-}"
+}
+
+print_passport_purchase_guide() {
+  local account_id="${1:?}" webhook_url="${2:-}" avatar_url="${3:-}" contact_uri="${4:-}" label="${5:-}"
+  echo ""
+  echo "──────────────────────────────────────────────────────────────"
+  if [[ -n "$label" ]]; then
+    echo "Craft your Passport for ${label} at https://purchase.identyclaw.com"
+  else
+    echo "Craft your Passport at https://purchase.identyclaw.com"
+  fi
+  echo "──────────────────────────────────────────────────────────────"
+  echo "1. Fund a SEPARATE checkout wallet with NEAR (e.g. HOT Wallet)."
+  echo "   Do not paste the agent key file into chat or the portal."
+  echo "2. Open: https://purchase.identyclaw.com"
+  echo "3. Paste this 64-char hex as the NEAR recipient account:"
+  echo ""
+  echo "   ${account_id}"
+  echo ""
+  echo "4. Fill the Passport form. Values already collected by setup are [selected]:"
+  print_passport_webhook_field "A2A / webhook URL" "$webhook_url"
+  print_passport_field "Avatar image URL" "$avatar_url" "https://identyclaw.com/avatar.png (portal default) or any https image"
+  print_passport_field "ContactURI" "$contact_uri" "scheme:authority:identifier  e.g. telegram:telegram.com:@YourBot  or  email:domain:you@domain"
+  echo ""
+  echo "   Also collect on the portal: name, creature/role, traits, longevity."
+  echo "5. Connect the paying wallet, mint, wait for confirmation."
+  echo "   Docs: https://www.discernible.io/  ·  https://api.identyclaw.com/.well-known/enrollment"
+  echo "──────────────────────────────────────────────────────────────"
+}
+
+upsert_env_local_kv() {
+  local file="${1:?}" key="${2:?}" value="${3:-}"
+  [[ -n "$value" ]] || return 0
+  python3 - "$file" "$key" "$value" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+key, value = sys.argv[2], sys.argv[3]
+text = path.read_text() if path.is_file() else ""
+lines = text.splitlines(True)
+prefix = f"{key}="
+out, found = [], False
+for line in lines:
+    stripped = line.lstrip()
+    if stripped.startswith(prefix) and not stripped.startswith("#"):
+        out.append(f"{key}={value}\n")
+        found = True
+    else:
+        out.append(line)
+if not found:
+    if out and not str(out[-1]).endswith("\n"):
+        out.append("\n")
+    out.append(f"{key}={value}\n")
+path.parent.mkdir(parents=True, exist_ok=True)
+path.write_text("".join(out))
+PY
+}
+
 

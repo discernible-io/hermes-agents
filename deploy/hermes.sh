@@ -6,7 +6,7 @@
 #
 # Usage:
 #   ./hermes.sh init
-#   ./hermes.sh setup          # Hermes wizard + IdentyClaw Passport (TTY)
+#   ./hermes.sh setup          # populate -app (Hermes wizard); last: auto NEAR enroll + mint guide
 #   ./hermes.sh start
 #   ./hermes.sh stop
 #   ./hermes.sh status
@@ -15,7 +15,7 @@
 #   ./hermes.sh chat
 #   ./hermes.sh exec -- hermes config set model.provider openrouter
 #   ./hermes.sh own host       # reclaim app dir after stop
-#   ./hermes.sh idcp-setup     # IdentyClaw only (enroll → purchase → session)
+#   ./hermes.sh idcp-setup     # Resume Passport: auto enroll → purchase → session
 #   ./hermes.sh idcp-install   # IdentyClaw helper + skill into app dir
 #   ./hermes.sh idcp <cmd…>    # ensure_session | create_hola | …
 #   ./hermes.sh himalaya-install
@@ -240,7 +240,7 @@ cmd_init() {
   echo "Pulling ${HERMES_IMAGE} ..."
   podman pull "$HERMES_IMAGE"
   echo "App dir: $(hermes_app_dir)"
-  echo "Next: ./hermes.sh setup   # Hermes + IdentyClaw Passport (interactive TTY)"
+  echo "Next: ./hermes.sh setup   # populate -app; last: auto NEAR account + Passport mint"
 }
 
 # Host-side idcp (used during setup when the gateway is stopped).
@@ -346,22 +346,54 @@ cmd_setup() {
   load_env
   ensure_egress_defaults
   restore_app_ownership
+  _hermes_collect_passport_fields
   echo ""
   echo "=== IdentyClaw Passport (this fork) ==="
   cmd_idcp_setup
   echo ""
   echo "Setup finished. Start with: ./hermes.sh start"
+  echo "Then chat: ./hermes.sh chat    # console; or Telegram if configured during the wizard"
 }
 
-# Natural IdentyClaw path: install → enroll → purchase guide → ensure_session → me.
-# Invoked from setup (required) or standalone to resume after mint.
+_hermes_collect_passport_fields() {
+  local envf webhook avatar contact dotenv
+  envf="$(hermes_env_file)"
+  dotenv="$(hermes_gateway_env_file)"
+  if [[ -r "$dotenv" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$dotenv" || true
+    set +a
+  fi
+  load_env
+  echo ""
+  echo "==> Passport fields (Enter keeps the value; empty means collect at purchase.identyclaw.com)"
+  webhook="$(hermes_passport_webhook_url)"
+  avatar="${IDENTYCLAW_AVATAR_URL:-}"
+  contact="$(hermes_passport_contact_uri)"
+  if [[ -t 0 && "${SKIP_SETUP_PROMPTS:-0}" != "1" ]]; then
+    [[ -z "$webhook" || "$webhook" == *127.0.0.1* || "$webhook" == *localhost* ]] \
+      && webhook="$(identyclaw_prompt_with_default "  A2A / webhook URL" "$webhook")"
+    [[ -z "$avatar" ]] && avatar="$(identyclaw_prompt_with_default "  Avatar image URL" "$avatar")"
+    [[ -z "$contact" ]] && contact="$(identyclaw_prompt_with_default "  ContactURI" "$contact")"
+  fi
+  upsert_env_local_kv "$envf" IDENTYCLAW_WEBHOOK_URL "$webhook"
+  upsert_env_local_kv "$envf" IDENTYCLAW_AVATAR_URL "$avatar"
+  upsert_env_local_kv "$envf" IDENTYCLAW_CONTACT_URI "$contact"
+  [[ -n "$webhook" ]] && export IDENTYCLAW_WEBHOOK_URL="$webhook"
+  [[ -n "$avatar" ]] && export IDENTYCLAW_AVATAR_URL="$avatar"
+  [[ -n "$contact" ]] && export IDENTYCLAW_CONTACT_URI="$contact"
+}
+
+# Natural IdentyClaw path: auto enroll (no operator input) → purchase guide → session.
+# Invoked from setup (last step) or standalone to resume after mint.
 cmd_idcp_setup() {
   ensure_app_layout
   load_env
   _idcp_install_core
 
   echo ""
-  echo "Enrolling NEAR implicit account (agent key file — not the paying wallet) ..."
+  echo "Creating NEAR implicit account (automatic — no operator input) ..."
   local enroll_json account_id
   enroll_json="$(_idcp_host enroll)"
   echo "$enroll_json"
@@ -375,15 +407,17 @@ except Exception:
 print(d.get("account_id") or "")
 ' 2>/dev/null || true
   )"
+  account_id="${account_id//[[:space:]]/}"
   if [[ -z "$account_id" ]]; then
     account_id="$(_idcp_account_id)"
+    account_id="${account_id//[[:space:]]/}"
   fi
   if [[ -z "$account_id" ]]; then
     echo "Could not determine implicit_account_id after enroll." >&2
     exit 1
   fi
+  echo "Recipient account (automatic): ${account_id}"
 
-  # Already bound? Skip purchase pause.
   local tmp_sess tmp_me
   tmp_sess="$(mktemp)"
   tmp_me="$(mktemp)"
@@ -393,24 +427,24 @@ print(d.get("account_id") or "")
     echo "Passport already active on home (api.identyclaw.com):"
     cat "$tmp_me"
     rm -f "$tmp_sess" "$tmp_me"
+    _hermes_print_chat_next
     return 0
   fi
   rm -f "$tmp_sess" "$tmp_me"
 
-  echo ""
-  echo "──────────────────────────────────────────────────────────────"
-  echo "Craft your Passport (required)"
-  echo "──────────────────────────────────────────────────────────────"
-  echo "1. Fund a SEPARATE checkout wallet with NEAR (e.g. HOT Wallet)."
-  echo "   Do not paste the agent key file into chat or the portal."
-  echo "2. Open: https://purchase.identyclaw.com"
-  echo "3. Paste this 64-char hex as the NEAR recipient account:"
-  echo ""
-  echo "   ${account_id}"
-  echo ""
-  echo "4. Connect the paying wallet, mint, wait for confirmation."
-  echo "   Docs: https://www.discernible.io/  ·  https://api.identyclaw.com/.well-known/enrollment"
-  echo "──────────────────────────────────────────────────────────────"
+  local dotenv
+  dotenv="$(hermes_gateway_env_file)"
+  if [[ -r "$dotenv" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$dotenv" || true
+    set +a
+  fi
+  print_passport_purchase_guide \
+    "$account_id" \
+    "${IDENTYCLAW_WEBHOOK_URL:-$(hermes_passport_webhook_url)}" \
+    "${IDENTYCLAW_AVATAR_URL:-}" \
+    "${IDENTYCLAW_CONTACT_URI:-$(hermes_passport_contact_uri)}"
 
   if [[ ! -t 0 ]]; then
     echo "Non-interactive TTY: after minting, re-run: ./hermes.sh idcp-setup" >&2
@@ -427,6 +461,7 @@ print(d.get("account_id") or "")
     if _idcp_host ensure_session && _idcp_host me; then
       echo ""
       echo "IdentyClaw home session ready."
+      _hermes_print_chat_next
       return 0
     fi
     if (( attempt == max_attempts )); then
@@ -442,6 +477,19 @@ print(d.get("account_id") or "")
   echo "  ./hermes.sh idcp-setup" >&2
   echo "  # or: ./hermes.sh idcp ensure_session && ./hermes.sh idcp me" >&2
   exit 1
+}
+
+_hermes_print_chat_next() {
+  local tg="${TELEGRAM_BOT_USERNAME:-}"
+  tg="${tg#@}"
+  echo ""
+  echo "After mint + start, chat as the operator:"
+  echo "  Console:   ./hermes.sh chat"
+  if [[ -n "$tg" ]]; then
+    echo "  Telegram:  @${tg}"
+  else
+    echo "  Telegram:  configure during ./hermes.sh setup (Hermes wizard) or in $(hermes_gateway_env_file)"
+  fi
 }
 
 cmd_idcp_install() {

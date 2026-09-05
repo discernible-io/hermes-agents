@@ -103,17 +103,26 @@ git clone https://github.com/discernible-io/hermes-agents.git ~/hermes-agents
 cd ~/hermes-agents/deploy
 chmod +x hermes.sh
 ./hermes.sh init          # creates ~/hermes-agents-app + env.local, pulls image
-./hermes.sh setup         # Hermes wizard + IdentyClaw (enroll → purchase → session)
+./hermes.sh setup         # populate -app (Hermes wizard); last: auto NEAR account + mint guide
 ./hermes.sh start         # detached gateway
 ```
 
-`setup` always runs IdentyClaw after the Hermes wizard: installs `idcp`, enrolls a NEAR implicit account, pauses for mint at [purchase.identyclaw.com](https://purchase.identyclaw.com), then activates the home session. Resume a paused mint with `./hermes.sh idcp-setup`.
+`init` only prepares the sibling app directory (config and secrets live there).
+`setup` runs the Hermes wizard, then **automatically** creates a NEAR implicit
+account (no operator input). It prints the recipient hex plus any Passport
+fields already collected (A2A / webhook URL, avatar URL, ContactURI) as
+**[selected]**, and asks you to mint at
+[purchase.identyclaw.com](https://purchase.identyclaw.com). Resume a paused mint
+with `./hermes.sh idcp-setup`. After mint, chat on the console (`./hermes.sh chat`)
+or via Telegram if the wizard configured it.
 
 Runtime state lives in `~/hermes-agents-app/` (override with `HERMES_APP_DIR`).
 
 ### 2. Create a NEAR implicit account
 
-Handled inside `./hermes.sh setup` (or `./hermes.sh idcp-setup`). Hermes uses the host-login path (`idcp`), not OpenClaw plugins. Enrollment writes credentials under `~/hermes-agents-app/secrets/near-credentials/`.
+Handled inside `./hermes.sh setup` (or `./hermes.sh idcp-setup`) — **automatic,
+no operator input**. Hermes uses the host-login path (`idcp`), not OpenClaw
+plugins. Enrollment writes credentials under `~/hermes-agents-app/secrets/near-credentials/`.
 
 ```bash
 # Standalone (already done by setup):
@@ -141,7 +150,7 @@ You can also fund or swap via other NEAR wallets / DEX (e.g. Ref Finance). What 
 ### 4. Craft the Passport at purchase.identyclaw.com
 
 1. Open **[https://purchase.identyclaw.com](https://purchase.identyclaw.com)**.
-2. Fill the Passport form (name, creature/role, ContactURI, traits, longevity, optional webhook/avatar — see the [enrollment guide](https://api.identyclaw.com/api/mcp/resource/doc:reference:enrollment)).
+2. Fill the Passport form. `setup` marks collected A2A / webhook URL, avatar URL, and ContactURI as **[selected]** — paste those, then name, creature/role, traits, and longevity (see the [enrollment guide](https://api.identyclaw.com/api/mcp/resource/doc:reference:enrollment)).
 3. Paste the agent's **64-char hex** `implicit_account_id` as the NEAR account that will **receive** the Passport (implicit hex account, not a named `.near` account).
 4. **Connect NEAR Wallet** — choose HOT Wallet (or another Wallet Selector option) and approve the mint transaction with the funded wallet from step 3.
 5. Wait for confirmation (~seconds). The Passport is minted on-chain to that implicit account.
