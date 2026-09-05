@@ -77,11 +77,20 @@ async function cmdEnroll() {
     : [];
 
   if (existing.length > 0) {
+    let account_id = null;
+    try {
+      const raw = JSON.parse(fs.readFileSync(path.join(dir, existing[0]), "utf8"));
+      account_id = raw.account_id || raw.implicit_account_id || null;
+    } catch {
+      /* ignore */
+    }
     print({
       ok: true,
       already: true,
       near_credentials_dir: dir,
       files: existing,
+      account_id,
+      purchase: "https://purchase.identyclaw.com",
       next: "Human: mint Passport at https://purchase.identyclaw.com with account_id, then: idcp ensure_session",
     });
     return;

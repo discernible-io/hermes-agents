@@ -103,18 +103,20 @@ git clone https://github.com/discernible-io/hermes-agents.git ~/hermes-agents
 cd ~/hermes-agents/deploy
 chmod +x hermes.sh
 ./hermes.sh init          # creates ~/hermes-agents-app + env.local, pulls image
-./hermes.sh setup         # interactive wizard (finish before start)
+./hermes.sh setup         # Hermes wizard + IdentyClaw (enroll → purchase → session)
 ./hermes.sh start         # detached gateway
-./hermes.sh idcp-install  # IdentyClaw helper CLI + skill into the app dir
 ```
+
+`setup` always runs IdentyClaw after the Hermes wizard: installs `idcp`, enrolls a NEAR implicit account, pauses for mint at [purchase.identyclaw.com](https://purchase.identyclaw.com), then activates the home session. Resume a paused mint with `./hermes.sh idcp-setup`.
 
 Runtime state lives in `~/hermes-agents-app/` (override with `HERMES_APP_DIR`).
 
 ### 2. Create a NEAR implicit account
 
-Hermes uses the host-login path (`idcp`), not OpenClaw plugins. Enrollment writes credentials under `~/hermes-agents-app/secrets/near-credentials/`.
+Handled inside `./hermes.sh setup` (or `./hermes.sh idcp-setup`). Hermes uses the host-login path (`idcp`), not OpenClaw plugins. Enrollment writes credentials under `~/hermes-agents-app/secrets/near-credentials/`.
 
 ```bash
+# Standalone (already done by setup):
 ./hermes.sh idcp enroll
 ```
 
@@ -148,13 +150,17 @@ Pricing tiers and fields change over time; trust the portal for current fees.
 
 ### 5. Activate on Hermes (home session)
 
-This logs into **IdentyClaw home** (`https://api.identyclaw.com`) — identity, HOLA, discovery. It does not log you into other APIs.
+`./hermes.sh setup` runs this after you confirm the mint. To activate alone (e.g. after Ctrl-C during purchase):
 
 ```bash
+./hermes.sh idcp-setup            # install + enroll (noop if done) → ensure_session → me
+# or:
 ./hermes.sh idcp ensure_session   # JWT login against home (cached under secrets/identyclaw/)
 ./hermes.sh idcp me               # confirm Passport identity / tokenId
 ./hermes.sh start                 # recreate gateway with /opt/idcp mount if needed
 ```
+
+This logs into **IdentyClaw home** (`https://api.identyclaw.com`) — identity, HOLA, discovery. It does not log you into other APIs.
 
 `ensure_session` signs the peer’s login challenge with the Passport Ed25519 key (`GET /api/login/timestamp` → `POST /api/login`). No password, no API key, no extra account.
 

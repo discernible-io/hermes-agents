@@ -6,7 +6,7 @@
 #
 # Usage:
 #   ./hermes.sh init
-#   ./hermes.sh setup          # interactive wizard (TTY)
+#   ./hermes.sh setup          # Hermes wizard + IdentyClaw Passport (TTY)
 #   ./hermes.sh start
 #   ./hermes.sh stop
 #   ./hermes.sh status
@@ -15,6 +15,7 @@
 #   ./hermes.sh chat
 #   ./hermes.sh exec -- hermes config set model.provider openrouter
 #   ./hermes.sh own host       # reclaim app dir after stop
+#   ./hermes.sh idcp-setup     # IdentyClaw only (enroll → purchase → session)
 #   ./hermes.sh idcp-install   # IdentyClaw helper + skill into app dir
 #   ./hermes.sh idcp <cmd…>    # ensure_session | create_hola | …
 #   ./hermes.sh himalaya-install
@@ -31,7 +32,7 @@ HERMES_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERMES_ROOT/scripts/lib.sh"
 
 usage() {
-  sed -n '2,24p' "$0" | sed 's/^# \?//'
+  sed -n '2,25p' "$0" | sed 's/^# \?//'
 }
 
 # Shared hermes gateway run args (caller adds --pod or host -p ports).
@@ -239,41 +240,53 @@ cmd_init() {
   echo "Pulling ${HERMES_IMAGE} ..."
   podman pull "$HERMES_IMAGE"
   echo "App dir: $(hermes_app_dir)"
-  echo "Next: ./hermes.sh setup   # or edit $(hermes_app_dir)/.env then ./hermes.sh start"
+  echo "Next: ./hermes.sh setup   # Hermes + IdentyClaw Passport (interactive TTY)"
 }
 
-cmd_setup() {
-  require_podman
-  ensure_app_layout
-  load_env
-  if container_is_running "$HERMES_CONTAINER" || hermes_is_pod_mode; then
-    echo "Stopping running gateway before setup..."
-    if hermes_is_pod_mode; then
-      stop_hermes_pod_stack
-    else
-      podman stop "$HERMES_CONTAINER" >/dev/null 2>&1 || true
-      podman rm -f "$HERMES_CONTAINER" >/dev/null 2>&1 || true
-    fi
+# Host-side idcp (used during setup when the gateway is stopped).
+_idcp_host() {
+  local app
+  app="$(hermes_app_dir)"
+  IDENTYCLAW_HOME="$app" HERMES_HOME="$app" HERMES_APP_DIR="$app" \
+    node "$HERMES_ROOT/idcp/bin/idcp.mjs" "$@"
+}
+
+_idcp_account_id() {
+  local app dir
+  app="$(hermes_app_dir)"
+  dir="${app}/secrets/near-credentials"
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$dir" <<'PY'
+import json, pathlib, sys
+d = pathlib.Path(sys.argv[1])
+if not d.is_dir():
+    sys.exit(0)
+files = sorted(d.glob("*.json"))
+if not files:
+    sys.exit(0)
+try:
+    raw = json.loads(files[0].read_text())
+except Exception:
+    sys.exit(0)
+aid = raw.get("account_id") or raw.get("implicit_account_id") or ""
+if aid:
+    print(aid)
+PY
   fi
-  # Bypass s6 entrypoint — otherwise reconcile can start the gateway mid-wizard
-  # and leave root-owned kanban locks hermes cannot write.
-  clear_gateway_runtime_state
-  echo "Running interactive setup (no gateway). Complete Nous Portal / API prompts in this TTY."
-  run_hermes_cli "$HERMES_IMAGE" setup
-  load_env
-  ensure_egress_defaults
-  restore_app_ownership
-  echo "Setup finished. Start with: ./hermes.sh start"
 }
 
-cmd_idcp_install() {
+# Install idcp deps + skill + volume hints.
+_idcp_install_core() {
   ensure_app_layout
   ensure_idcp_layout
-  load_env
   local app
   app="$(hermes_app_dir)"
   if ! command -v npm >/dev/null 2>&1; then
-    echo "npm required on host for idcp-install" >&2
+    echo "npm required on host for IdentyClaw (idcp-install)" >&2
+    exit 1
+  fi
+  if ! command -v node >/dev/null 2>&1; then
+    echo "node required on host for IdentyClaw" >&2
     exit 1
   fi
   echo "Installing idcp deps in ${HERMES_ROOT}/idcp ..."
@@ -295,7 +308,6 @@ marker = "# idcp-docker-volumes (managed by hermes.sh idcp-install)"
 if marker in text:
     print("config.yaml already has idcp docker_volumes marker")
 else:
-    # Append under terminal: if present; else leave a comment block for operator
     block = "\n".join([
         "",
         marker,
@@ -311,7 +323,131 @@ PY
 
   echo "Skill → ${app}/skills/identity/identyclaw/"
   echo "Secrets → ${app}/secrets/"
-  echo "Next: ./hermes.sh idcp enroll   # then purchase Passport, then ensure_session"
+}
+
+cmd_setup() {
+  require_podman
+  ensure_app_layout
+  load_env
+  if container_is_running "$HERMES_CONTAINER" || hermes_is_pod_mode; then
+    echo "Stopping running gateway before setup..."
+    if hermes_is_pod_mode; then
+      stop_hermes_pod_stack
+    else
+      podman stop "$HERMES_CONTAINER" >/dev/null 2>&1 || true
+      podman rm -f "$HERMES_CONTAINER" 2>/dev/null || true
+    fi
+  fi
+  # Bypass s6 entrypoint — otherwise reconcile can start the gateway mid-wizard
+  # and leave root-owned kanban locks hermes cannot write.
+  clear_gateway_runtime_state
+  echo "Running interactive setup (no gateway). Complete Nous Portal / API prompts in this TTY."
+  run_hermes_cli "$HERMES_IMAGE" setup
+  load_env
+  ensure_egress_defaults
+  restore_app_ownership
+  echo ""
+  echo "=== IdentyClaw Passport (this fork) ==="
+  cmd_idcp_setup
+  echo ""
+  echo "Setup finished. Start with: ./hermes.sh start"
+}
+
+# Natural IdentyClaw path: install → enroll → purchase guide → ensure_session → me.
+# Invoked from setup (required) or standalone to resume after mint.
+cmd_idcp_setup() {
+  ensure_app_layout
+  load_env
+  _idcp_install_core
+
+  echo ""
+  echo "Enrolling NEAR implicit account (agent key file — not the paying wallet) ..."
+  local enroll_json account_id
+  enroll_json="$(_idcp_host enroll)"
+  echo "$enroll_json"
+  account_id="$(
+    printf '%s' "$enroll_json" | python3 -c '
+import json,sys
+try:
+    d=json.load(sys.stdin)
+except Exception:
+    d={}
+print(d.get("account_id") or "")
+' 2>/dev/null || true
+  )"
+  if [[ -z "$account_id" ]]; then
+    account_id="$(_idcp_account_id)"
+  fi
+  if [[ -z "$account_id" ]]; then
+    echo "Could not determine implicit_account_id after enroll." >&2
+    exit 1
+  fi
+
+  # Already bound? Skip purchase pause.
+  local tmp_sess tmp_me
+  tmp_sess="$(mktemp)"
+  tmp_me="$(mktemp)"
+  if _idcp_host ensure_session >"$tmp_sess" 2>/dev/null \
+    && _idcp_host me >"$tmp_me" 2>/dev/null; then
+    echo ""
+    echo "Passport already active on home (api.identyclaw.com):"
+    cat "$tmp_me"
+    rm -f "$tmp_sess" "$tmp_me"
+    return 0
+  fi
+  rm -f "$tmp_sess" "$tmp_me"
+
+  echo ""
+  echo "──────────────────────────────────────────────────────────────"
+  echo "Craft your Passport (required)"
+  echo "──────────────────────────────────────────────────────────────"
+  echo "1. Fund a SEPARATE checkout wallet with NEAR (e.g. HOT Wallet)."
+  echo "   Do not paste the agent key file into chat or the portal."
+  echo "2. Open: https://purchase.identyclaw.com"
+  echo "3. Paste this 64-char hex as the NEAR recipient account:"
+  echo ""
+  echo "   ${account_id}"
+  echo ""
+  echo "4. Connect the paying wallet, mint, wait for confirmation."
+  echo "   Docs: https://www.discernible.io/  ·  https://api.identyclaw.com/.well-known/enrollment"
+  echo "──────────────────────────────────────────────────────────────"
+
+  if [[ ! -t 0 ]]; then
+    echo "Non-interactive TTY: after minting, re-run: ./hermes.sh idcp-setup" >&2
+    echo "Account id saved under $(hermes_app_dir)/secrets/near-credentials/" >&2
+    return 0
+  fi
+
+  # shellcheck disable=SC2162
+  read -r -p "Press Enter after the Passport mint confirms (Ctrl-C to pause; resume with ./hermes.sh idcp-setup) ... "
+
+  local attempt=1 max_attempts=8
+  while (( attempt <= max_attempts )); do
+    echo "Activating home session (attempt ${attempt}/${max_attempts}) ..."
+    if _idcp_host ensure_session && _idcp_host me; then
+      echo ""
+      echo "IdentyClaw home session ready."
+      return 0
+    fi
+    if (( attempt == max_attempts )); then
+      break
+    fi
+    echo "Login failed — Passport may still be indexing, or mint not finished."
+    # shellcheck disable=SC2162
+    read -r -p "Press Enter to retry (or Ctrl-C and later: ./hermes.sh idcp-setup) ... "
+    (( ++attempt ))
+  done
+
+  echo "Could not activate session yet. After mint confirms:" >&2
+  echo "  ./hermes.sh idcp-setup" >&2
+  echo "  # or: ./hermes.sh idcp ensure_session && ./hermes.sh idcp me" >&2
+  exit 1
+}
+
+cmd_idcp_install() {
+  load_env
+  _idcp_install_core
+  echo "Next: ./hermes.sh idcp-setup   # enroll → purchase → ensure_session"
   if container_is_running "${HERMES_CONTAINER:-hermes}"; then
     echo "Gateway is running — recreate to pick up /opt/idcp mount: ./hermes.sh start"
   fi
@@ -324,7 +460,7 @@ cmd_idcp() {
   local app
   app="$(hermes_app_dir)"
   if [[ ! -d "$HERMES_ROOT/idcp/node_modules" ]]; then
-    echo "Run ./hermes.sh idcp-install first" >&2
+    echo "Run ./hermes.sh setup (or idcp-install) first" >&2
     exit 1
   fi
   if container_is_running "$HERMES_CONTAINER"; then
@@ -338,11 +474,9 @@ cmd_idcp() {
       "$HERMES_CONTAINER" \
       node /opt/idcp/bin/idcp.mjs "$@"
   else
-    IDENTYCLAW_HOME="$app" HERMES_HOME="$app" HERMES_APP_DIR="$app" \
-      node "$HERMES_ROOT/idcp/bin/idcp.mjs" "$@"
+    _idcp_host "$@"
   fi
 }
-
 
 cmd_stop() {
   require_podman
@@ -546,6 +680,7 @@ main() {
     chat) cmd_chat "$@" ;;
     exec) cmd_exec "$@" ;;
     own) cmd_own "$@" ;;
+    idcp-setup) cmd_idcp_setup "$@" ;;
     idcp-install) cmd_idcp_install "$@" ;;
     idcp) cmd_idcp "$@" ;;
     himalaya-install) cmd_himalaya_install "$@" ;;

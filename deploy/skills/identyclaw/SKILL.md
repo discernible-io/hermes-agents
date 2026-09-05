@@ -55,6 +55,8 @@ Inside the Hermes container, app dir is `/opt/data` and `idcp` is on PATH when i
 
 ## Enrollment (once)
 
+Operators run this via `./hermes.sh setup` (or `./hermes.sh idcp-setup`). Low-level:
+
 ```bash
 idcp enroll
 # Human: https://purchase.identyclaw.com with account_id

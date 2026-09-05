@@ -39,12 +39,12 @@ Rootless Podman linger is enabled on every start (`scripts/ensure-podman-linger.
 cd ~/hermes-agents/deploy
 chmod +x hermes.sh
 ./hermes.sh init          # creates ~/hermes-agents-app + env.local, pulls image
-./hermes.sh setup         # interactive wizard only (no gateway / no s6)
+./hermes.sh setup         # Hermes wizard + IdentyClaw Passport (enroll → purchase → session)
 ./hermes.sh start         # detached gateway, --restart always
 ./hermes.sh status
 ```
 
-Run **setup and start as separate commands** (do not chain them). Setup is interactive and must finish before start.
+Run **setup and start as separate commands** (do not chain them). Setup is interactive: Hermes API/keys first, then IdentyClaw (NEAR enroll, mint pause at [purchase.identyclaw.com](https://purchase.identyclaw.com), home session). Resume a paused Passport step with `./hermes.sh idcp-setup`.
 
 Uses rootless **Podman** (same host pattern as `identyclaw-agents`). Image: `docker.io/nousresearch/hermes-agent:latest`.
 
@@ -55,7 +55,7 @@ AlmaLinux / RHEL: `podman-restart.service` only restarts containers with policy 
 | Command | What it does |
 |---------|----------------|
 | `./hermes.sh init` | App layout + pull image |
-| `./hermes.sh setup` | Interactive `hermes setup` into the app volume |
+| `./hermes.sh setup` | Hermes wizard **then** IdentyClaw Passport path |
 | `./hermes.sh start` | Recreate gateway container |
 | `./hermes.sh stop` | Stop and remove container |
 | `./hermes.sh status` | Paths + container status |
@@ -63,6 +63,7 @@ AlmaLinux / RHEL: `podman-restart.service` only restarts containers with policy 
 | `./hermes.sh pull` | Pull newer image (then `start`) |
 | `./hermes.sh chat` | Ephemeral interactive CLI against the app dir |
 | `./hermes.sh exec -- …` | Run a command in the live container (or one-shot) |
+| `./hermes.sh idcp-setup` | IdentyClaw only: install → enroll → purchase guide → session |
 | `./hermes.sh idcp-install` | Install IdentyClaw `idcp` helper + skill into app dir |
 | `./hermes.sh idcp …` | Passport ops (`enroll`, `ensure_session`, `create_hola`, …) |
 | `./hermes.sh himalaya-install` | Install Himalaya CLI + Migadu config into app dir |
@@ -139,12 +140,15 @@ Host-login path (portable brief — not OpenClaw plugins). Secrets stay in the *
 | `hermes-agents-app/skills/identity/identyclaw/` | Agent skill |
 
 ```bash
-./hermes.sh idcp-install
-./hermes.sh idcp enroll                 # gennearaccount → secrets/near-credentials
+./hermes.sh setup                   # includes IdentyClaw end-to-end
+# or resume Passport only:
+./hermes.sh idcp-setup
+# low-level:
+./hermes.sh idcp enroll             # gennearaccount → secrets/near-credentials
 # Human: https://purchase.identyclaw.com with account_id
 ./hermes.sh idcp ensure_session
 ./hermes.sh idcp me
-./hermes.sh start                       # recreates gateway with /opt/idcp mount
+./hermes.sh start                   # recreates gateway with /opt/idcp mount
 ```
 
 Home JWT is **not** accepted on federated peers. Remint per `apiEndpoint` (no API key):

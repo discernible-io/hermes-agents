@@ -27,12 +27,20 @@ Code stays in the synced repo; runtime identity stays in the sibling app dir (`H
 ## Practitioner path (current)
 
 ```bash
+./hermes.sh setup              # Hermes wizard + IdentyClaw (required on this fork)
+# or Passport-only resume:
+./hermes.sh idcp-setup         # install → enroll → purchase guide → ensure_session → me
+./hermes.sh start              # remount /opt/idcp + secrets for gateway / sandboxes
+```
+
+Low-level (same steps `idcp-setup` runs):
+
+```bash
 ./hermes.sh idcp-install
 ./hermes.sh idcp enroll
 # Human: mint Passport at https://purchase.identyclaw.com with account_id
 ./hermes.sh idcp ensure_session
 ./hermes.sh idcp me
-./hermes.sh start    # remount /opt/idcp + secrets for gateway / sandboxes
 ```
 
 Optional docs MCP:
