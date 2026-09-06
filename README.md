@@ -4,6 +4,8 @@
 
 # Hermes Agent ☤
 
+**Mint:** [Get an IdentyClaw Passport](https://purchase.identyclaw.com) (buy once — no subscription). Then use this fork.
+
 **This is [Discernible](https://www.discernible.io/)'s fork of
 [Nous Research Hermes Agent](https://github.com/NousResearch/hermes-agent).**
 Upstream remains the agent runtime (CLI, gateway, TUI, skills, learning loop).
