@@ -6,7 +6,8 @@
 #
 # Usage:
 #   ./hermes.sh init
-#   ./hermes.sh setup          # populate -app (Hermes wizard); last: auto NEAR enroll + mint guide
+#   ./hermes.sh nuke [--yes]   # delete -app and re-seed (overwrites; confirmation required)
+#   ./hermes.sh setup          # populate -app (wizard, mail, Passport); NEAR enroll; self-signed TLS last
 #   ./hermes.sh start
 #   ./hermes.sh stop
 #   ./hermes.sh status
@@ -32,7 +33,7 @@ HERMES_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERMES_ROOT/scripts/lib.sh"
 
 usage() {
-  sed -n '2,25p' "$0" | sed 's/^# \?//'
+  sed -n '2,26p' "$0" | sed 's/^# \?//'
 }
 
 # Shared hermes gateway run args (caller adds --pod or host -p ports).
@@ -234,13 +235,57 @@ cmd_start() {
 }
 
 cmd_init() {
+  local app env_file existed=0
   require_podman
+  require_setup_prereqs || exit 1
+  app="$(hermes_app_dir)"
+  env_file="$(hermes_env_file)"
+  [[ -f "$env_file" ]] && existed=1
   ensure_app_layout
   load_env
   echo "Pulling ${HERMES_IMAGE} ..."
   podman pull "$HERMES_IMAGE"
-  echo "App dir: $(hermes_app_dir)"
+  echo "App dir: ${app}"
+  if [[ "$existed" == "1" ]]; then
+    echo "env.local already exists (leaving unchanged). To replace the -app dir: $0 nuke"
+  fi
   echo "Next: ./hermes.sh setup   # populate -app; last: auto NEAR account + Passport mint"
+}
+
+# Wipe sibling -app (env.local, secrets, Passport keys, Hermes data) and re-run init.
+cmd_nuke() {
+  local yes=0 arg app
+  for arg in "$@"; do
+    case "$arg" in
+      --yes|-y) yes=1 ;;
+      -h|--help)
+        echo "Usage: $0 nuke [--yes]"
+        echo "  Deletes $(hermes_app_dir) and re-seeds env.local from the template."
+        echo "  init never overwrites; nuke is the overwrite path."
+        return 0
+        ;;
+      *)
+        echo "Usage: $0 nuke [--yes]" >&2
+        exit 1
+        ;;
+    esac
+  done
+  app="$(hermes_app_dir)"
+  if ! app_dir_is_nukeable "$app"; then
+    echo "Refusing to nuke ${app} (expected a sibling *-app directory, not HOME or the git checkout)" >&2
+    exit 1
+  fi
+  if [[ -e "$app" ]]; then
+    confirm_app_nuke "$app" "$yes" || { echo "aborted"; exit 1; }
+    if command -v podman >/dev/null 2>&1; then
+      cmd_stop >/dev/null 2>&1 || true
+    fi
+    restore_app_ownership 2>/dev/null || true
+    remove_app_dir "$app" || exit 1
+  else
+    echo "No app dir yet at ${app} — running init"
+  fi
+  cmd_init
 }
 
 # Host-side idcp (used during setup when the gateway is stopped).
@@ -326,6 +371,7 @@ PY
 }
 
 cmd_setup() {
+  require_setup_prereqs || exit 1
   require_podman
   ensure_app_layout
   load_env
@@ -346,13 +392,44 @@ cmd_setup() {
   load_env
   ensure_egress_defaults
   restore_app_ownership
+  _hermes_collect_operator_secrets
   _hermes_collect_passport_fields
   echo ""
   echo "=== IdentyClaw Passport (this fork) ==="
-  cmd_idcp_setup
+  cmd_idcp_setup || true
+  setup_ensure_self_signed_certs || true
   echo ""
   echo "Setup finished. Start with: ./hermes.sh start"
   echo "Then chat: ./hermes.sh chat    # console; or Telegram if configured during the wizard"
+}
+
+# Mail password + public host when missing (wizard does not collect these).
+_hermes_collect_operator_secrets() {
+  local envf password host
+  envf="$(hermes_env_file)"
+  load_env
+  echo ""
+  echo "==> Operator secrets (Enter skips; values already on disk are kept)"
+  if [[ -n "${HERMES_EMAIL:-}" ]]; then
+    if [[ -n "${HERMES_MAIL_PASSWORD:-}" ]]; then
+      write_himalaya_secrets "$HERMES_MAIL_PASSWORD" || true
+    elif ! [[ -s "$(hermes_app_dir)/secrets/himalaya/imap.pass" ]]; then
+      password="$(identyclaw_prompt_secret "  Migadu mailbox password for ${HERMES_EMAIL} (Enter skips)")"
+      if [[ -n "$password" ]]; then
+        write_himalaya_secrets "$password" || true
+      else
+        echo "    (no mailbox password — later: ./hermes.sh himalaya-password)"
+      fi
+    fi
+    ensure_himalaya || echo "    (himalaya layout incomplete — later: ./hermes.sh himalaya-install)" >&2
+  fi
+  if [[ -z "${HERMES_PUBLIC_HOST:-}" ]]; then
+    host="$(identyclaw_prompt_with_default "  Public hostname (HERMES_PUBLIC_HOST, Enter skips)" "")"
+    if [[ -n "$host" ]]; then
+      upsert_env_local_kv "$envf" HERMES_PUBLIC_HOST "$host"
+      export HERMES_PUBLIC_HOST="$host"
+    fi
+  fi
 }
 
 _hermes_collect_passport_fields() {
@@ -414,7 +491,7 @@ print(d.get("account_id") or "")
   fi
   if [[ -z "$account_id" ]]; then
     echo "Could not determine implicit_account_id after enroll." >&2
-    exit 1
+    return 1
   fi
   echo "Recipient account (automatic): ${account_id}"
 
@@ -476,7 +553,7 @@ print(d.get("account_id") or "")
   echo "Could not activate session yet. After mint confirms:" >&2
   echo "  ./hermes.sh idcp-setup" >&2
   echo "  # or: ./hermes.sh idcp ensure_session && ./hermes.sh idcp me" >&2
-  exit 1
+  return 1
 }
 
 _hermes_print_chat_next() {
@@ -719,6 +796,7 @@ main() {
   shift || true
   case "$cmd" in
     init) cmd_init "$@" ;;
+    nuke) cmd_nuke "$@" ;;
     setup) cmd_setup "$@" ;;
     start) cmd_start "$@" ;;
     stop) cmd_stop "$@" ;;

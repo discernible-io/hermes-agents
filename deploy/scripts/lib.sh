@@ -91,6 +91,62 @@ require_podman() {
   }
 }
 
+_prereq_install_hint() {
+  local pkgs="$1" id="" like=""
+  if [[ -r /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    id="$(. /etc/os-release && printf '%s' "${ID:-}")"
+    like="$(. /etc/os-release && printf '%s' "${ID_LIKE:-}")"
+  fi
+  case " ${id} ${like} " in
+    *" rhel "*|*" fedora "*|*" centos "*|*" almalinux "*|*" rocky "*)
+      echo "Install (AlmaLinux / RHEL / Fedora): sudo dnf install -y ${pkgs}" >&2
+      ;;
+    *" debian "*|*" ubuntu "*)
+      echo "Install (Debian / Ubuntu): sudo apt-get install -y ${pkgs}" >&2
+      ;;
+    *)
+      echo "Install: ${pkgs}" >&2
+      ;;
+  esac
+}
+
+require_setup_prereqs() {
+  local missing=() name ver major
+  echo "==> Checking prerequisites"
+  for name in podman python3 openssl node npm; do
+    if command -v "$name" >/dev/null 2>&1; then
+      case "$name" in
+        podman) ver="$(podman --version 2>/dev/null | head -1)" ;;
+        python3) ver="$(python3 --version 2>/dev/null)" ;;
+        openssl) ver="$(openssl version 2>/dev/null)" ;;
+        node) ver="$(node --version 2>/dev/null)" ;;
+        npm) ver="$(npm --version 2>/dev/null)" ;;
+        *) ver="" ;;
+      esac
+      echo "    ok  ${name}${ver:+  (${ver})}"
+    else
+      missing+=("$name")
+      echo "    missing  ${name}"
+    fi
+  done
+  if command -v node >/dev/null 2>&1; then
+    major="$(node --version 2>/dev/null | sed 's/^v//' | cut -d. -f1)"
+    if [[ "${major:-0}" -lt 22 ]]; then
+      echo "    warn  Node.js 22+ recommended (found $(node --version 2>/dev/null))" >&2
+    fi
+  fi
+  if ! command -v loginctl >/dev/null 2>&1; then
+    echo "    skip  loginctl (optional; needed only for enable-boot linger)"
+  fi
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    echo "Missing required tools: ${missing[*]}" >&2
+    _prereq_install_hint "podman python3 openssl nodejs npm"
+    return 1
+  fi
+  return 0
+}
+
 load_env() {
   local f
   f="$(hermes_env_file)"
@@ -238,6 +294,54 @@ ensure_app_layout() {
       echo "Created ${app}/env.local from env.example — edit keys before relying on the gateway."
     fi
   fi
+}
+
+app_dir_is_nukeable() {
+  local app="${1:?}"
+  local abs repo parent
+  abs="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$app")"
+  repo="$(cd "${HERMES_ROOT}/.." && pwd)"
+  parent="$(cd "${HERMES_ROOT}/../.." && pwd)"
+  [[ -n "$abs" && "$abs" != "/" ]] || return 1
+  [[ "$abs" != "$HOME" ]] || return 1
+  [[ "$(basename "$abs")" == *-app ]] || return 1
+  [[ "$abs" != "$repo" ]] || return 1
+  [[ "$abs" != "$HERMES_ROOT" ]] || return 1
+  [[ "$abs" != "$parent" ]] || return 1
+  return 0
+}
+
+confirm_app_nuke() {
+  local app="${1:?}" yes="${2:-0}" base reply
+  base="$(basename "$app")"
+  echo "This DELETES ${app}"
+  echo "  env.local, .env, Passport keys, Hermes data, TLS — all gone."
+  echo "  init never overwrites; nuke is the overwrite path."
+  if [[ "$yes" == "1" ]]; then
+    return 0
+  fi
+  if [[ ! -t 0 ]]; then
+    echo "Non-interactive TTY: pass --yes" >&2
+    return 1
+  fi
+  # shellcheck disable=SC2162
+  read -r -p "Type ${base} to confirm: " reply
+  [[ "$reply" == "$base" ]]
+}
+
+remove_app_dir() {
+  local app="${1:?}"
+  [[ -e "$app" ]] || return 0
+  echo "==> Removing ${app}"
+  if rm -rf "$app" 2>/dev/null; then
+    return 0
+  fi
+  if command -v podman >/dev/null 2>&1; then
+    podman unshare rm -rf "$app"
+    return 0
+  fi
+  echo "Could not remove ${app} (permission). Stop the gateway and retry." >&2
+  return 1
 }
 
 # IdentyClaw: secrets + skill under app dir; helper code stays in synced repo.
@@ -919,6 +1023,41 @@ ensure_tls_certs() {
     bash "${HERMES_ROOT}/scripts/generate-self-signed-certs.sh" "$cert_dir" "${args[@]}"
 }
 
+# Last step of setup: create self-signed PEMs if missing and print where they live.
+setup_ensure_self_signed_certs() {
+  local cert_dir host
+  cert_dir="$(hermes_app_dir)/certs"
+  mkdir -p "$cert_dir"
+  echo ""
+  echo "==> Self-signed TLS certificates"
+  if [[ -s "${cert_dir}/fullchain.pem" && -s "${cert_dir}/privkey.pem" ]]; then
+    echo "Already present (not overwritten):"
+    echo "  ${cert_dir}/fullchain.pem"
+    echo "  ${cert_dir}/privkey.pem"
+    return 0
+  fi
+  host="${HERMES_PUBLIC_HOST:-}"
+  if [[ -z "$host" ]]; then
+    host="$(identyclaw_prompt_with_default "  Public hostname for TLS (Enter skips)" "")"
+    if [[ -n "$host" ]]; then
+      upsert_env_local_kv "$(hermes_env_file)" HERMES_PUBLIC_HOST "$host"
+      export HERMES_PUBLIC_HOST="$host"
+    fi
+  fi
+  if [[ -z "${HERMES_PUBLIC_HOST:-}" ]]; then
+    echo "Not created — set HERMES_PUBLIC_HOST in env.local, then: ./hermes.sh generate-certs"
+    return 0
+  fi
+  if ensure_tls_certs && [[ -s "${cert_dir}/fullchain.pem" && -s "${cert_dir}/privkey.pem" ]]; then
+    echo "Created self-signed certificate (bootstrap TLS — replace with CA-issued PEMs when ready):"
+    echo "  ${cert_dir}/fullchain.pem"
+    echo "  ${cert_dir}/privkey.pem"
+    return 0
+  fi
+  echo "Could not create self-signed certs — later: ./hermes.sh generate-certs" >&2
+  return 1
+}
+
 normalize_tls_certs() {
   local cert_dir f
   cert_dir="$(hermes_app_dir)/certs"
@@ -1148,6 +1287,16 @@ identyclaw_prompt_with_default() {
     read -r -p "${prompt}: " var || true
   fi
   printf '%s' "${var:-$default}"
+}
+
+identyclaw_prompt_secret() {
+  local prompt="$1" var=""
+  if [[ ! -t 0 ]] || [[ "${SKIP_SETUP_PROMPTS:-0}" == "1" ]]; then
+    return 0
+  fi
+  read -r -s -p "${prompt}: " var || true
+  echo >&2
+  printf '%s' "$var"
 }
 
 hermes_passport_webhook_url() {

@@ -102,17 +102,22 @@ Requires rootless [Podman](https://podman.io/). Full operator reference: [`deplo
 git clone https://github.com/discernible-io/hermes-agents.git ~/hermes-agents
 cd ~/hermes-agents/deploy
 chmod +x hermes.sh
-./hermes.sh init          # creates ~/hermes-agents-app + env.local, pulls image
+./hermes.sh init          # creates ~/hermes-agents-app + env.local if missing (never overwrites)
 ./hermes.sh setup         # populate -app (Hermes wizard); last: auto NEAR account + mint guide
 ./hermes.sh start         # detached gateway
 ```
 
-`init` only prepares the sibling app directory (config and secrets live there).
-`setup` runs the Hermes wizard, then **automatically** creates a NEAR implicit
+`init` only prepares the sibling app directory (config and secrets live there)
+and **never overwrites** existing files. To wipe and re-seed from templates,
+use `./hermes.sh nuke` (confirmation required, or `--yes`).
+`setup` runs the Hermes wizard, prompts for a missing mailbox password, then
+**automatically** creates a NEAR implicit
 account (no operator input). It prints the recipient hex plus any Passport
 fields already collected (A2A / webhook URL, avatar URL, ContactURI) as
 **[selected]**, and asks you to mint at
-[purchase.identyclaw.com](https://purchase.identyclaw.com). Resume a paused mint
+[purchase.identyclaw.com](https://purchase.identyclaw.com). After mint it creates
+self-signed TLS PEMs under `~/hermes-agents-app/certs/` if they are missing
+(needs `HERMES_PUBLIC_HOST`). Resume a paused mint
 with `./hermes.sh idcp-setup`. After mint, chat on the console (`./hermes.sh chat`)
 or via Telegram if the wizard configured it.
 

@@ -38,11 +38,14 @@ Rootless Podman linger is enabled on every start (`scripts/ensure-podman-linger.
 ```bash
 cd ~/hermes-agents/deploy
 chmod +x hermes.sh
-./hermes.sh init          # creates ~/hermes-agents-app + env.local, pulls image
+./hermes.sh init          # creates ~/hermes-agents-app + env.local if missing, pulls image
 ./hermes.sh setup         # populate -app (Hermes wizard); last: auto NEAR account + mint guide
 ./hermes.sh start         # detached gateway, --restart always
 ./hermes.sh status
 ```
+
+`init` never overwrites an existing `env.local`. To replace the whole `-app`
+directory, use `./hermes.sh nuke` (type the basename, or `--yes`).
 
 Run **setup and start as separate commands** (do not chain them). Setup is
 interactive: Hermes API/keys first, then Passport fields, then an **automatic**
@@ -59,8 +62,9 @@ AlmaLinux / RHEL: `podman-restart.service` only restarts containers with policy 
 
 | Command | What it does |
 |---------|----------------|
-| `./hermes.sh init` | App layout + pull image |
-| `./hermes.sh setup` | Populate -app (Hermes wizard); last: auto NEAR enroll + mint guide |
+| `./hermes.sh init` | App layout + pull image (`env.local` only if missing; never overwrites) |
+| `./hermes.sh nuke [--yes]` | Delete `-app` and re-seed from templates (overwrites) |
+| `./hermes.sh setup` | Wizard + mail/Passport; NEAR enroll; self-signed TLS last |
 | `./hermes.sh start` | Recreate gateway container |
 | `./hermes.sh stop` | Stop and remove container |
 | `./hermes.sh status` | Paths + container status |
