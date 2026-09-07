@@ -660,25 +660,40 @@ install_himalaya_binary() {
 
   local name="${HERMES_CONTAINER:-hermes}"
   if container_is_running "$name"; then
-    podman cp "${tmp}/himalaya" "${name}:${app}/bin/himalaya"
+    if ! podman exec -u hermes -e "HERMES_HOME=${app}" "$name" \
+      sh -c 'mkdir -p "$HERMES_HOME/bin"'; then
+      echo "Failed to create ${app}/bin in running container" >&2
+      rm -rf "$tmp"
+      return 1
+    fi
+    if ! podman cp "${tmp}/himalaya" "${name}:${app}/bin/himalaya"; then
+      echo "Failed to copy himalaya into container" >&2
+      rm -rf "$tmp"
+      return 1
+    fi
     podman exec -u root "$name" chown 10000:10000 "${app}/bin/himalaya"
     podman exec -u root "$name" chmod 755 "${app}/bin/himalaya"
   else
-    local z
-    z="$(selinux_mount_suffix)"
+    # Rootless: do not bind-mount mktemp (0700) into --user 10000 — UID 10000
+    # cannot traverse it. Install via userns root + chown hermes.
     prepare_app_for_container
-    # Copy via a throwaway container as hermes UID
-    podman run --rm \
-      --user 10000:10000 \
-      -v "${app}/bin:/out:rw${z}" \
-      -v "${tmp}:/in:ro${z}" \
-      --entrypoint cp \
-      "${HERMES_IMAGE:-docker.io/nousresearch/hermes-agent:latest}" \
-      /in/himalaya /out/himalaya
+    if ! podman unshare bash -c "
+      set -e
+      mkdir -p $(printf '%q' "${app}/bin")
+      cp $(printf '%q' "${tmp}/himalaya") $(printf '%q' "$bin")
+      chown 10000:10000 $(printf '%q' "$bin")
+      chmod 755 $(printf '%q' "$bin")
+    "; then
+      echo "Failed to install himalaya into ${bin}" >&2
+      rm -rf "$tmp"
+      return 1
+    fi
   fi
   rm -rf "$tmp"
   echo "Installed ${bin}"
-  app_shell "\"\$HERMES_HOME/bin/himalaya\" --version" || true
+  if ! app_shell "\"\$HERMES_HOME/bin/himalaya\" --version"; then
+    echo "Warning: himalaya installed but --version failed" >&2
+  fi
 }
 
 write_himalaya_secrets() {
@@ -693,7 +708,7 @@ write_himalaya_secrets() {
   # Pass password via env into container shell (avoid embedding in script files beyond .pass).
   local name="${HERMES_CONTAINER:-hermes}"
   if container_is_running "$name"; then
-    podman exec -u hermes \
+    if ! podman exec -u hermes \
       -e "HERMES_HOME=${app}" \
       -e "HERMES_MAIL_PASSWORD=${password}" \
       "$name" sh -c '
@@ -709,12 +724,15 @@ cp "$HERMES_HOME/secrets/himalaya/imap.sh" "$HERMES_HOME/secrets/himalaya/smtp.s
 chmod 700 "$HERMES_HOME/secrets/himalaya"
 chmod 700 "$HERMES_HOME/secrets/himalaya"/*.sh
 chmod 600 "$HERMES_HOME/secrets/himalaya"/*.pass
-'
+'; then
+      echo "write_himalaya_secrets: failed in running container" >&2
+      return 1
+    fi
   else
     local z
     z="$(selinux_mount_suffix)"
     prepare_app_for_container
-    podman run --rm \
+    if ! podman run --rm \
       --user 10000:10000 \
       -v "${app}:${app}:rw${z}" \
       -e "HERMES_HOME=${app}" \
@@ -734,7 +752,10 @@ cp "$HERMES_HOME/secrets/himalaya/imap.sh" "$HERMES_HOME/secrets/himalaya/smtp.s
 chmod 700 "$HERMES_HOME/secrets/himalaya"
 chmod 700 "$HERMES_HOME/secrets/himalaya"/*.sh
 chmod 600 "$HERMES_HOME/secrets/himalaya"/*.pass
-'
+'; then
+      echo "write_himalaya_secrets: failed" >&2
+      return 1
+    fi
   fi
   echo "Wrote secrets under ${app}/secrets/himalaya/"
 }
@@ -784,17 +805,23 @@ chmod 600 "\$HOME_DIR/.config/himalaya/config.toml"
 EOF
 )
   if container_is_running "$name"; then
-    podman exec -u hermes -e "HERMES_HOME=${app}" "$name" sh -c "$script"
+    if ! podman exec -u hermes -e "HERMES_HOME=${app}" "$name" sh -c "$script"; then
+      echo "write_himalaya_config: failed in running container" >&2
+      return 1
+    fi
   else
     local z
     z="$(selinux_mount_suffix)"
     prepare_app_for_container
-    podman run --rm --user 10000:10000 \
+    if ! podman run --rm --user 10000:10000 \
       -v "${app}:${app}:rw${z}" \
       -e "HERMES_HOME=${app}" \
       --entrypoint sh \
       "${HERMES_IMAGE:-docker.io/nousresearch/hermes-agent:latest}" \
-      -c "$script"
+      -c "$script"; then
+      echo "write_himalaya_config: failed" >&2
+      return 1
+    fi
   fi
   echo "Wrote Himalaya config for ${email}"
 }
@@ -820,30 +847,37 @@ write_himalaya_helpers() {
   local dest_skill="${app}/skills/email/himalaya"
 
   if container_is_running "$name"; then
-    podman exec -u hermes -e "HERMES_HOME=${app}" "$name" \
-      sh -c "mkdir -p \"$dest_scripts\" \"$dest_skill\""
-    podman cp "$tmp/scripts/." "${name}:${dest_scripts}/"
-    podman cp "$tmp/SKILL.md" "${name}:${dest_skill}/SKILL.md"
+    if ! podman exec -u hermes -e "HERMES_HOME=${app}" "$name" \
+      sh -c "mkdir -p \"$dest_scripts\" \"$dest_skill\""; then
+      echo "Failed to create himalaya helper dirs in container" >&2
+      rm -rf "$tmp"
+      return 1
+    fi
+    if ! podman cp "$tmp/scripts/." "${name}:${dest_scripts}/" \
+      || ! podman cp "$tmp/SKILL.md" "${name}:${dest_skill}/SKILL.md"; then
+      echo "Failed to copy himalaya helpers into container" >&2
+      rm -rf "$tmp"
+      return 1
+    fi
     podman exec -u root "$name" sh -c \
       "chown -R 10000:10000 \"$dest_scripts\" \"$dest_skill\" && chmod 755 \"$dest_scripts\"/*.sh && chmod 644 \"$dest_skill/SKILL.md\""
   else
-    local z
-    z="$(selinux_mount_suffix)"
+    # Same rootless pitfall as install_himalaya_binary: mktemp is 0700 and
+    # --user 10000 cannot read a bind-mounted /in. Copy via userns instead.
     prepare_app_for_container
-    podman run --rm \
-      --user 10000:10000 \
-      -v "${app}:${app}:rw${z}" \
-      -v "${tmp}:/in:ro${z}" \
-      --entrypoint sh \
-      "${HERMES_IMAGE:-docker.io/nousresearch/hermes-agent:latest}" \
-      -c "
-set -e
-mkdir -p '${dest_scripts}' '${dest_skill}'
-cp -a /in/scripts/. '${dest_scripts}/'
-cp /in/SKILL.md '${dest_skill}/SKILL.md'
-chmod 755 '${dest_scripts}'/*.sh
-chmod 644 '${dest_skill}/SKILL.md'
-"
+    if ! podman unshare bash -c "
+      set -e
+      mkdir -p $(printf '%q' "$dest_scripts") $(printf '%q' "$dest_skill")
+      cp -a $(printf '%q' "$tmp/scripts")/. $(printf '%q' "$dest_scripts")/
+      cp $(printf '%q' "$tmp/SKILL.md") $(printf '%q' "${dest_skill}/SKILL.md")
+      chown -R 10000:10000 $(printf '%q' "$dest_scripts") $(printf '%q' "$dest_skill")
+      chmod 755 $(printf '%q' "$dest_scripts")/*.sh
+      chmod 644 $(printf '%q' "${dest_skill}/SKILL.md")
+    "; then
+      echo "Failed to install himalaya helpers into ${dest_scripts}" >&2
+      rm -rf "$tmp"
+      return 1
+    fi
   fi
   rm -rf "$tmp"
   echo "Helpers → ${dest_scripts}/"
@@ -1352,10 +1386,10 @@ print_passport_purchase_guide() {
   echo "──────────────────────────────────────────────────────────────"
 }
 
-upsert_env_local_kv() {
-  local file="${1:?}" key="${2:?}" value="${3:-}"
-  [[ -n "$value" ]] || return 0
-  python3 - "$file" "$key" "$value" <<'PY'
+# Upsert KEY=VALUE in env.local. Works when the app tree is host-owned OR
+# owned by container UID 10000 (after prepare_app_for_container / himalaya).
+_upsert_env_local_kv_python() {
+  python3 - "$1" "$2" "$3" <<'PY'
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
 key, value = sys.argv[2], sys.argv[3]
@@ -1377,6 +1411,63 @@ if not found:
 path.parent.mkdir(parents=True, exist_ok=True)
 path.write_text("".join(out))
 PY
+}
+
+upsert_env_local_kv() {
+  local file="${1:?}" key="${2:?}" value="${3:-}"
+  local dir tmp host_ok=0
+  [[ -n "$value" ]] || return 0
+  dir="$(dirname "$file")"
+
+  # Host-writable path (after restore_app_ownership / before prepare).
+  # Note: when the parent is 0700/UID 10000, host [[ -e ]] is false even if
+  # the file exists — never treat that as "create fresh".
+  if [[ -r "$file" && -w "$file" ]]; then
+    host_ok=1
+  elif [[ ! -e "$file" && -w "$dir" ]]; then
+    # Parent is host-writable and the path truly does not exist (or is
+    # invisible — but then -w dir would also fail for 0700/10000 trees).
+    host_ok=1
+  fi
+  if [[ "$host_ok" == 1 ]]; then
+    _upsert_env_local_kv_python "$file" "$key" "$value"
+    return
+  fi
+
+  # Container-owned tree: host python cannot even stat env.local. Edit via
+  # userns root, then keep hermes ownership when the parent is UID 10000.
+  tmp="$(mktemp)"
+  # Always try userns read first — host -e/-r lie on 0700 hermes dirs.
+  if podman unshare test -e "$file" 2>/dev/null; then
+    if ! podman unshare cat "$file" >"$tmp" 2>/dev/null; then
+      echo "upsert_env_local_kv: cannot read ${file}" >&2
+      rm -f "$tmp"
+      return 1
+    fi
+  else
+    : >"$tmp"
+  fi
+  if ! _upsert_env_local_kv_python "$tmp" "$key" "$value"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  if ! podman unshare bash -c "
+    set -e
+    dest=$(printf '%q' "$file")
+    src=$(printf '%q' "$tmp")
+    mkdir -p \"\$(dirname \"\$dest\")\"
+    cp \"\$src\" \"\$dest\"
+    parent=\"\$(dirname \"\$dest\")\"
+    if [[ \"\$(stat -c %u \"\$parent\")\" == 10000 ]]; then
+      chown 10000:10000 \"\$dest\"
+    fi
+    chmod 600 \"\$dest\"
+  "; then
+    echo "upsert_env_local_kv: cannot write ${file}" >&2
+    rm -f "$tmp"
+    return 1
+  fi
+  rm -f "$tmp"
 }
 
 
