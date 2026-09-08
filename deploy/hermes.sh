@@ -413,7 +413,8 @@ _hermes_collect_operator_secrets() {
   if [[ -n "${HERMES_EMAIL:-}" ]]; then
     if [[ -n "${HERMES_MAIL_PASSWORD:-}" ]]; then
       write_himalaya_secrets "$HERMES_MAIL_PASSWORD" || true
-    elif ! [[ -s "$(hermes_app_dir)/secrets/himalaya/imap.pass" ]]; then
+    elif ! podman unshare test -s "$(hermes_app_dir)/secrets/himalaya/imap.pass" 2>/dev/null \
+      && ! [[ -s "$(hermes_app_dir)/secrets/himalaya/imap.pass" ]]; then
       password="$(identyclaw_prompt_secret "  Migadu mailbox password for ${HERMES_EMAIL} (Enter skips)")"
       if [[ -n "$password" ]]; then
         write_himalaya_secrets "$password" || true
