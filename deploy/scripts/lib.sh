@@ -344,6 +344,50 @@ remove_app_dir() {
   return 1
 }
 
+# Mundo en Blanco persona + catalog skill → live -app paths (survives image rebuild).
+# Tenant seed lives OUTSIDE git: $APP/seed/mundo-en-blanco/ (companion -app only).
+ensure_mundo_en_blanco_seed() {
+  local app seed dest_skill
+  app="$(hermes_app_dir)"
+  seed="${app}/seed/mundo-en-blanco"
+  if [[ ! -d "$seed" ]]; then
+    echo "No Mundo en Blanco seed at ${seed} (optional)."
+    return 0
+  fi
+
+  _mundo_seed_copy() {
+    # Prefer host write; fall back to podman unshare when -app is container-owned.
+    if cp -a "$@" 2>/dev/null; then
+      return 0
+    fi
+    if command -v podman >/dev/null 2>&1; then
+      podman unshare cp -a "$@"
+      return $?
+    fi
+    return 1
+  }
+
+  mkdir -p "$app/memories" "$app/skills/mundo-en-blanco/references" "$app/skills/mundo-en-blanco/scripts" 2>/dev/null \
+    || podman unshare mkdir -p "$app/memories" "$app/skills/mundo-en-blanco/references" "$app/skills/mundo-en-blanco/scripts" 2>/dev/null \
+    || true
+
+  if [[ -f "$seed/SOUL.md" ]]; then
+    _mundo_seed_copy "$seed/SOUL.md" "$app/SOUL.md" \
+      && echo "Seeded SOUL.md ← ${seed}/SOUL.md" || echo "Warning: could not seed SOUL.md" >&2
+  fi
+  if [[ -f "$seed/MEMORY.md" ]]; then
+    _mundo_seed_copy "$seed/MEMORY.md" "$app/memories/MEMORY.md" \
+      && echo "Seeded memories/MEMORY.md" || echo "Warning: could not seed MEMORY.md" >&2
+  fi
+
+  dest_skill="$app/skills/mundo-en-blanco"
+  if [[ -d "$seed/skills/mundo-en-blanco" ]]; then
+    _mundo_seed_copy "$seed/skills/mundo-en-blanco/." "$dest_skill/" \
+      && chmod +x "$dest_skill/scripts/"*.sh 2>/dev/null || true
+    echo "Seeded skill ← ${seed}/skills/mundo-en-blanco/"
+  fi
+}
+
 # IdentyClaw: secrets + skill under app dir; helper code stays in synced repo.
 ensure_idcp_layout() {
   local app

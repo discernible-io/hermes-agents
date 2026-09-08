@@ -22,6 +22,7 @@
 #   ./hermes.sh himalaya-install
 #   ./hermes.sh himalaya-password
 #   ./hermes.sh himalaya-test
+#   ./hermes.sh mundo-seed      # re-apply Mundo en Blanco SOUL/skill into -app
 #   ./hermes.sh generate-certs [--force]
 #   ./hermes.sh build-nginx
 
@@ -33,7 +34,7 @@ HERMES_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERMES_ROOT/scripts/lib.sh"
 
 usage() {
-  sed -n '2,26p' "$0" | sed 's/^# \?//'
+  sed -n '2,27p' "$0" | sed 's/^# \?//'
 }
 
 # Shared hermes gateway run args (caller adds --pod or host -p ports).
@@ -173,6 +174,8 @@ cmd_start() {
   require_podman
   ensure_app_layout
   ensure_idcp_layout
+  # Persona + catalog skill into companion -app (before container chown).
+  ensure_mundo_en_blanco_seed || echo "Warning: mundo-en-blanco seed incomplete" >&2
   load_env
 
   # Rootless Podman: linger so pods survive SSH/Cursor logout (SKIP_LINGER=1 to skip).
@@ -792,6 +795,14 @@ cmd_himalaya_test() {
   himalaya_test
 }
 
+cmd_mundo_seed() {
+  ensure_app_layout
+  ensure_mundo_en_blanco_seed
+  echo "Mundo en Blanco seed applied under $(hermes_app_dir)"
+  echo "  Seed source: $(hermes_app_dir)/seed/mundo-en-blanco/"
+  echo "  Live: SOUL.md, memories/MEMORY.md, skills/mundo-en-blanco/"
+}
+
 main() {
   local cmd="${1:-}"
   shift || true
@@ -813,6 +824,7 @@ main() {
     himalaya-install) cmd_himalaya_install "$@" ;;
     himalaya-password) cmd_himalaya_password "$@" ;;
     himalaya-test) cmd_himalaya_test "$@" ;;
+    mundo-seed) cmd_mundo_seed "$@" ;;
     generate-certs) cmd_generate_certs "$@" ;;
     build-nginx) cmd_build_nginx "$@" ;;
     -h|--help|help|"") usage ;;
