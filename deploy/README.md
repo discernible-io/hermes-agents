@@ -12,8 +12,7 @@ can sync this checkout without carrying runtime state.
 |------|---------|
 | `~/hermes-agents/` | This fork (upstream source + `deploy/` wrapper) |
 | `~/hermes-agents/deploy/` | Podman scripts, `idcp/`, nginx sidecar, IdentyClaw skill |
-| `~/hermes-agents-app/` | Runtime home (mounted at `/opt/data`) — `env.local`, `.env`, `config.yaml`, `SOUL.md`, `skills/`, `memories/`, `sessions/` |
-| `~/hermes-agents-app/seed/mundo-en-blanco/` | Tenant persona seed (not in git) — re-applied into live `-app` paths on `start` |
+| `~/hermes-agents-app/` | Runtime home (mounted at `/opt/data`) — `env.local`, `.env`, `config.yaml`, `skills/`, `memories/`, `sessions/` |
 
 Override the app root with `HERMES_APP_DIR=/custom/path`.
 
@@ -196,24 +195,6 @@ writes `terminal.docker_volumes` for idcp + secrets.
 
 To enable iron-proxy later: set `HERMES_EGRESS=1` in `env.local`, run
 `./hermes.sh exec -- hermes egress setup`, then `./hermes.sh start`.
-
-## Mundo en Blanco persona (Sofia)
-
-Shop advisor SOUL, MEMORY, and catalog skill live only in the companion **`-app`**
-directory (gitignored) so they are **not** published with this repo:
-
-| Path | Role |
-|------|------|
-| `~/hermes-agents-app/SOUL.md` | Live persona |
-| `~/hermes-agents-app/memories/MEMORY.md` | Live standing facts |
-| `~/hermes-agents-app/skills/mundo-en-blanco/` | Live catalog skill |
-| `~/hermes-agents-app/seed/mundo-en-blanco/` | Durable seed copy (also `-app` only) |
-
-`./hermes.sh start` and `./hermes.sh mundo-seed` re-apply the seed into the live
-paths (survives image rebuild). After `nuke`, restore the seed under
-`~/hermes-agents-app/seed/mundo-en-blanco/` from your own backup, then `start`.
-
-`deploy/seed/README.md` is a public stub only — tenant content is gitignored.
 
 ## Himalaya email (Migadu)
 

@@ -6,11 +6,6 @@ env.local
 .env.*
 !.env.example
 
-# Tenant persona seeds — live under ~/hermes-agents-app/seed/ only.
-# Keep a publishable stub README.md here; ignore any accidental local dumps.
-seed/**
-!seed/README.md
-
 # --- Accidental runtime state inside the checkout (normally in HERMES_APP_DIR) ---
 **/secrets/
 **/sessions/
