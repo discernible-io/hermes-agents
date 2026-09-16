@@ -611,6 +611,7 @@ cmd_idcp_install() {
 }
 
 # Opt-in Passport peer stack: overlay A2A + RODiT /hooks/* + auth sidecar (does not replace HMAC webhooks).
+# App dir is often owned by container UID 10000 while the gateway runs — write via podman unshare then.
 cmd_identyclaw_peer_install() {
   ensure_app_layout
   ensure_idcp_layout
@@ -635,29 +636,71 @@ cmd_identyclaw_peer_install() {
   echo "Installing auth package deps in ${pkg_auth} ..."
   (cd "$pkg_auth" && npm install --omit=dev)
 
-  mkdir -p "$plugins_dir"
-  rm -rf "${plugins_dir}/a2a-platform" "${plugins_dir}/identyclaw-webhooks"
-  cp -a "$pkg_a2a" "${plugins_dir}/a2a-platform"
-  cp -a "$pkg_hooks" "${plugins_dir}/identyclaw-webhooks"
-  # Drop tests/node_modules copies if any
-  rm -rf "${plugins_dir}/a2a-platform/__pycache__" "${plugins_dir}/identyclaw-webhooks/__pycache__"
-
-  # Sidecar launcher on PATH for host + sandboxes
-  cat >"${app}/bin/identyclaw-auth-sidecar" <<EOF
+  # Host cannot mkdir/cp into a 0700 tree owned by the running gateway — use userns root.
+  if [[ ! -w "$app" ]]; then
+    if ! command -v podman >/dev/null 2>&1; then
+      echo "App dir ${app} is not writable (gateway owns it) and podman is missing." >&2
+      echo "Stop the gateway and reclaim: ./hermes.sh stop && ./hermes.sh own host" >&2
+      exit 1
+    fi
+    echo "App dir owned by gateway UID — installing plugins via podman unshare ..."
+    podman unshare bash -c "
+      set -euo pipefail
+      mkdir -p $(printf '%q' "$app/plugins") $(printf '%q' "$app/bin") \
+        $(printf '%q' "$app/run") $(printf '%q' "$app/logs")
+      rm -rf $(printf '%q' "$app/plugins/a2a-platform") \
+        $(printf '%q' "$app/plugins/identyclaw-webhooks")
+      cp -a $(printf '%q' "$pkg_a2a") $(printf '%q' "$app/plugins/a2a-platform")
+      cp -a $(printf '%q' "$pkg_hooks") $(printf '%q' "$app/plugins/identyclaw-webhooks")
+      rm -rf $(printf '%q' "$app/plugins/a2a-platform/__pycache__") \
+        $(printf '%q' "$app/plugins/identyclaw-webhooks/__pycache__")
+    "
+    podman unshare tee "${app}/bin/identyclaw-auth-sidecar" >/dev/null <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 export IDENTYCLAW_HOME="\${IDENTYCLAW_HOME:-${app}}"
 export HERMES_HOME="\${HERMES_HOME:-\$IDENTYCLAW_HOME}"
 exec node "${pkg_auth}/bin/sidecar.mjs" "\$@"
 EOF
-  chmod 755 "${app}/bin/identyclaw-auth-sidecar"
+    podman unshare chmod 755 "${app}/bin/identyclaw-auth-sidecar"
+    podman unshare touch "${app}/.identyclaw-peer-enabled"
+    # Keep hermes ownership on new files when the tree is UID 10000.
+    podman unshare bash -c "
+      app=$(printf '%q' "$app")
+      owner=\$(stat -c '%u' \"\$app\" 2>/dev/null || echo 10000)
+      chown -R \"\$owner:\$owner\" \
+        \"\$app/plugins/a2a-platform\" \
+        \"\$app/plugins/identyclaw-webhooks\" \
+        \"\$app/bin/identyclaw-auth-sidecar\" \
+        \"\$app/.identyclaw-peer-enabled\" 2>/dev/null || true
+    "
+  else
+    mkdir -p "$plugins_dir" "$app/bin"
+    rm -rf "${plugins_dir}/a2a-platform" "${plugins_dir}/identyclaw-webhooks"
+    cp -a "$pkg_a2a" "${plugins_dir}/a2a-platform"
+    cp -a "$pkg_hooks" "${plugins_dir}/identyclaw-webhooks"
+    rm -rf "${plugins_dir}/a2a-platform/__pycache__" "${plugins_dir}/identyclaw-webhooks/__pycache__"
+    cat >"${app}/bin/identyclaw-auth-sidecar" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export IDENTYCLAW_HOME="\${IDENTYCLAW_HOME:-${app}}"
+export HERMES_HOME="\${HERMES_HOME:-\$IDENTYCLAW_HOME}"
+exec node "${pkg_auth}/bin/sidecar.mjs" "\$@"
+EOF
+    chmod 755 "${app}/bin/identyclaw-auth-sidecar"
+    touch "${app}/.identyclaw-peer-enabled"
+  fi
 
   # Enable plugins in config.yaml (opt-in; allow tool override for a2a overlay)
-  if command -v python3 >/dev/null 2>&1 && [[ -f "${app}/config.yaml" ]]; then
-    python3 - "$app" <<'PY'
+  if command -v python3 >/dev/null 2>&1; then
+    local py_script
+    py_script="$(cat <<'PY'
 import pathlib, sys
 app = pathlib.Path(sys.argv[1])
 cfg = app / "config.yaml"
+if not cfg.is_file():
+    print(f"skip config enablement — missing {cfg}")
+    raise SystemExit(0)
 text = cfg.read_text()
 marker = "# identyclaw-peer (managed by hermes.sh identyclaw-peer-install)"
 block = f"""
@@ -685,18 +728,27 @@ else:
     print(f"Appended identyclaw-peer plugin enablement to {cfg}")
     print("Review/merge if you already had a plugins: section.")
 PY
+)"
+    if [[ -w "$app" ]]; then
+      python3 -c "$py_script" "$app"
+    else
+      podman unshare python3 -c "$py_script" "$app"
+    fi
   fi
 
-  # Resolve NEAR creds path for sidecar / gateway
+  # Resolve NEAR creds path for sidecar / gateway (upsert_env_local_kv already handles UID 10000)
   local cred=""
-  if [[ -d "${app}/secrets/near-credentials" ]]; then
-    cred="$(find "${app}/secrets/near-credentials" -maxdepth 1 -name '*.json' | head -1 || true)"
+  if [[ -w "$app" ]]; then
+    if [[ -d "${app}/secrets/near-credentials" ]]; then
+      cred="$(find "${app}/secrets/near-credentials" -maxdepth 1 -name '*.json' | head -1 || true)"
+    fi
+  else
+    cred="$(podman unshare bash -c "find $(printf '%q' "${app}/secrets/near-credentials") -maxdepth 1 -name '*.json' 2>/dev/null | head -1" || true)"
   fi
   if [[ -n "$cred" ]]; then
     upsert_env_local_kv "$(hermes_env_file)" NEAR_CREDENTIALS_FILE_PATH "$cred"
     upsert_env_local_kv "$(hermes_env_file)" RODIT_NEAR_CREDENTIALS_SOURCE file
-    # Also expose to gateway .env if present
-    if [[ -f "$(hermes_gateway_env_file)" ]]; then
+    if [[ -e "$(hermes_gateway_env_file)" ]] || podman unshare test -e "$(hermes_gateway_env_file)" 2>/dev/null; then
       upsert_env_local_kv "$(hermes_gateway_env_file)" NEAR_CREDENTIALS_FILE_PATH "$cred"
       upsert_env_local_kv "$(hermes_gateway_env_file)" RODIT_NEAR_CREDENTIALS_SOURCE file
     fi
@@ -704,11 +756,15 @@ PY
   upsert_env_local_kv "$(hermes_env_file)" IDENTYCLAW_AUTH_PORT "${IDENTYCLAW_AUTH_PORT:-9910}"
   upsert_env_local_kv "$(hermes_env_file)" IDENTYCLAW_HOOKS_PORT "${IDENTYCLAW_HOOKS_PORT:-9911}"
 
-  touch "${app}/.identyclaw-peer-enabled"
   echo ""
   echo "IdentyClaw peer stack installed (opt-in)."
   echo "  Plugins → ${plugins_dir}/a2a-platform , identyclaw-webhooks"
   echo "  Flag    → ${app}/.identyclaw-peer-enabled"
+  if container_is_running "${HERMES_CONTAINER:-hermes}"; then
+    echo ""
+    echo "Gateway is running — recreate after env edits so plugins load:"
+    echo "  ./hermes.sh start"
+  fi
   echo ""
   echo "Next:"
   echo "  1. Set IDENTYCLAW_JWT_AUDIENCE=<passport owner_id> in env.local / .env"
@@ -727,23 +783,45 @@ cmd_identyclaw_auth_start() {
   pidfile="${app}/run/identyclaw-auth.pid"
   logfile="${app}/logs/identyclaw-auth.log"
   port="${IDENTYCLAW_AUTH_PORT:-9910}"
-  mkdir -p "${app}/run" "${app}/logs"
-  if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
-    echo "Auth sidecar already running (pid $(cat "$pidfile"))"
-    return 0
+  if [[ -w "$app" ]]; then
+    mkdir -p "${app}/run" "${app}/logs"
+  else
+    podman unshare mkdir -p "${app}/run" "${app}/logs"
+  fi
+  if [[ -r "$pidfile" ]] || podman unshare test -r "$pidfile" 2>/dev/null; then
+    local oldpid
+    oldpid="$(cat "$pidfile" 2>/dev/null || podman unshare cat "$pidfile" 2>/dev/null || true)"
+    if [[ -n "$oldpid" ]] && kill -0 "$oldpid" 2>/dev/null; then
+      echo "Auth sidecar already running (pid ${oldpid})"
+      return 0
+    fi
   fi
   [[ -d "$pkg/node_modules" ]] || (cd "$pkg" && npm install --omit=dev)
   if [[ -z "${NEAR_CREDENTIALS_FILE_PATH:-}" ]]; then
     local cred
-    cred="$(find "${app}/secrets/near-credentials" -maxdepth 1 -name '*.json' 2>/dev/null | head -1 || true)"
+    if [[ -w "$app" ]]; then
+      cred="$(find "${app}/secrets/near-credentials" -maxdepth 1 -name '*.json' 2>/dev/null | head -1 || true)"
+    else
+      cred="$(podman unshare bash -c "find $(printf '%q' "${app}/secrets/near-credentials") -maxdepth 1 -name '*.json' 2>/dev/null | head -1" || true)"
+    fi
     [[ -n "$cred" ]] && export NEAR_CREDENTIALS_FILE_PATH="$cred" RODIT_NEAR_CREDENTIALS_SOURCE=file
   fi
   export IDENTYCLAW_HOME="$app" HERMES_HOME="$app" IDENTYCLAW_AUTH_PORT="$port"
-  nohup node "${pkg}/bin/sidecar.mjs" --port "$port" >>"$logfile" 2>&1 &
-  echo $! >"$pidfile"
+  # Sidecar binds host 127.0.0.1; logs/pid may live under container-owned app dir.
+  if [[ -w "$app" ]]; then
+    nohup node "${pkg}/bin/sidecar.mjs" --port "$port" >>"$logfile" 2>&1 &
+    echo $! >"$pidfile"
+  else
+    # Log on host-writable path under the package; keep pid via unshare.
+    logfile="${pkg}/.sidecar.log"
+    nohup node "${pkg}/bin/sidecar.mjs" --port "$port" >>"$logfile" 2>&1 &
+    echo $! | podman unshare tee "$pidfile" >/dev/null
+  fi
   sleep 0.3
-  if kill -0 "$(cat "$pidfile")" 2>/dev/null; then
-    echo "Auth sidecar listening on 127.0.0.1:${port} (pid $(cat "$pidfile"), log ${logfile})"
+  local pid
+  pid="$(cat "$pidfile" 2>/dev/null || podman unshare cat "$pidfile" 2>/dev/null || true)"
+  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+    echo "Auth sidecar listening on 127.0.0.1:${port} (pid ${pid}, log ${logfile})"
   else
     echo "Auth sidecar failed to start — see ${logfile}" >&2
     exit 1
