@@ -30,7 +30,6 @@ export async function ensureSession({
   ensureSecretsLayout();
   const existing = loadJwt(baseUrl);
   if (existing && !force) {
-    // Soft reuse — caller can force refresh
     const meta = loadSessionsMeta()[baseUrl] || {};
     return {
       ok: true,
@@ -68,7 +67,6 @@ export async function ensureSession({
   }
 
   let tokenId = login.token_id || login.roditid || null;
-  // Confirm identity when possible
   try {
     const meRes = await fetch(`${baseUrl}/api/me/identity`, {
       headers: { authorization: `Bearer ${login.jwt_token}` },
@@ -165,7 +163,6 @@ export function listSessions() {
       tokenId: meta.tokenId || null,
       accountid: meta.accountid || null,
       updated_at: meta.updated_at || null,
-      // never include jwt
     })),
   };
 }

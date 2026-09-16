@@ -1,0 +1,25 @@
+name: identyclaw-webhooks
+label: IdentyClaw Webhooks
+kind: platform
+version: 0.1.0
+description: >
+  RODiT-signed webhook ingress on /hooks/wake and /hooks/agent (Ed25519 via
+  auth sidecar). Separate from Hermes HMAC /webhooks/{route}. Provides
+  send_rodit_webhook outbound tool.
+author: Discernible IO
+provides_tools:
+  - send_rodit_webhook
+requires_env: []
+optional_env:
+  - name: IDENTYCLAW_HOOKS_PORT
+    description: "Listen port for /hooks/* (default 9911)."
+    prompt: "IdentyClaw hooks port"
+    password: false
+  - name: IDENTYCLAW_AUTH_PORT
+    description: "Auth sidecar port (default 9910)."
+    prompt: "Auth sidecar port"
+    password: false
+  - name: IDENTYCLAW_HOOKS_HOST
+    description: "Bind host (default 127.0.0.1; use 0.0.0.0 behind nginx on pod network)."
+    prompt: "Hooks bind host"
+    password: false

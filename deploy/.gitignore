@@ -37,6 +37,9 @@ nginx/nginx.conf
 idcp/node_modules/
 idcp/vendor/hola-client/node_modules/
 
+# packages/hermes-identyclaw-auth (symlink target of idcp/)
+../packages/*/node_modules/
+
 # --- Logs & scratch ---
 *.log
 tmp/

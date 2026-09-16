@@ -1,0 +1,2 @@
+# Ignore installed Node deps under publishable IdentyClaw packages
+**/node_modules/

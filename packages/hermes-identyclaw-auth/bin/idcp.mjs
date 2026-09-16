@@ -3,15 +3,6 @@
  * idcp — IdentyClaw Passport helpers for Hermes (host login path).
  *
  * Secrets live under hermes-agents-app/secrets/ (sibling app dir).
- *
- * Usage:
- *   idcp enroll
- *   idcp ensure_session [--force] [--base URL]
- *   idcp list_sessions
- *   idcp me
- *   idcp request METHOD /api/path [--body JSON]
- *   idcp create_hola [--recipient MUNDO|peerTokenId]
- *   idcp verify_hola --hola 'HOLA/...' [--expected MUNDO]
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -104,7 +95,6 @@ async function cmdEnroll() {
 
   let ran = null;
   for (const bin of candidates) {
-    // Official CLI: `<bin> gennearaccount [DIRECTORY]`
     const gen = spawnSync(bin, ["gennearaccount", dir], { encoding: "utf8" });
     if (gen.error && gen.error.code === "ENOENT") continue;
     ran = { bin, gen };
@@ -112,12 +102,8 @@ async function cmdEnroll() {
   }
 
   if (!ran) {
-    // Fallback: vendored hola-client generator (same JSON shape)
     try {
-      const {
-        generateNearImplicitAccount,
-        writeNearCredentialsFile,
-      } = loadHolaClient();
+      const { generateNearImplicitAccount, writeNearCredentialsFile } = loadHolaClient();
       const account = generateNearImplicitAccount();
       const written = writeNearCredentialsFile(dir, { force: false });
       print({
@@ -176,8 +162,8 @@ async function cmdEnroll() {
   });
 }
 
-async function main() {
-  const args = parseArgs(process.argv.slice(2));
+export async function runCli(argv = process.argv.slice(2)) {
+  const args = parseArgs(argv);
   if (args.help || args._.length === 0) {
     usage();
     process.exit(args.help ? 0 : 1);
@@ -246,4 +232,9 @@ async function main() {
   }
 }
 
-main();
+const isDirect =
+  process.argv[1] &&
+  (process.argv[1].endsWith("/idcp.mjs") || process.argv[1].endsWith("/idcp"));
+if (isDirect) {
+  runCli();
+}

@@ -188,10 +188,27 @@ Day-to-day on home: `idcp create_hola` / `idcp verify_hola` / `idcp request …`
 
 | Path | Role |
 |------|------|
-| `~/hermes-agents/deploy/` | Podman scripts + `idcp/` |
+| `~/hermes-agents/deploy/` | Podman scripts + `idcp/` (symlink → packages) |
+| `~/hermes-agents/packages/` | Publishable IdentyClaw components (auth / A2A / hooks) |
 | `~/hermes-agents-app/secrets/near-credentials/` | NEAR key JSON |
 | `~/hermes-agents-app/secrets/identyclaw/` | JWT cache **per API host** |
 | `~/hermes-agents-app/skills/identity/identyclaw/` | Agent skill |
+
+### 5b. Passport peer stack (opt-in — A2A + signed hooks)
+
+API login via `idcp` is enough for federated HTTP APIs. To **be** a Passport peer (OpenClaw-compatible A2A JWT + Ed25519 `/hooks/*`):
+
+```bash
+./hermes.sh identyclaw-peer-install
+# Set in hermes-agents-app/env.local (and .env as needed):
+#   IDENTYCLAW_JWT_AUDIENCE=<passport owner_id>
+#   A2A_PUBLIC_URL=https://your-public-host:8443
+./hermes.sh identyclaw-auth-start
+./hermes.sh start
+# pod mode: ./hermes.sh build-nginx && ./hermes.sh start
+```
+
+This does **not** replace Hermes HMAC `/webhooks/{route}`. Stock Nous Hermes users can copy [`packages/`](./packages/README.md) without this Podman wrapper.
 
 ### 6. Log in to any federated peer (no API key)
 

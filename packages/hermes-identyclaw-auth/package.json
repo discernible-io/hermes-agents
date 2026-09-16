@@ -1,0 +1,32 @@
+{
+  "name": "@identyclaw/hermes-identyclaw-auth",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "IdentyClaw Passport auth for Hermes — idcp CLI + localhost RODiT sidecar",
+  "bin": {
+    "idcp": "./bin/idcp.mjs",
+    "identyclaw-auth-sidecar": "./bin/sidecar.mjs"
+  },
+  "exports": {
+    ".": "./src/lib/index.mjs",
+    "./sidecar": "./src/server.mjs"
+  },
+  "scripts": {
+    "idcp": "node ./bin/idcp.mjs",
+    "sidecar": "node ./bin/sidecar.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "dependencies": {
+    "@rodit/hola-client": "file:./vendor/hola-client",
+    "@rodit/rodit-auth-be": ">=9.16.0 <10",
+    "bs58": "^5.0.0",
+    "hi-base32": "^0.5.1",
+    "tweetnacl": "^1.0.3"
+  },
+  "license": "Apache-2.0",
+  "author": "Discernible IO"
+}

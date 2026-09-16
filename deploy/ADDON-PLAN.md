@@ -131,9 +131,11 @@ Practitioners who only want Passport on stock Hermes can copy `idcp/` + the skil
 ## Local work backlog
 
 - [x] Keep `idcp-install` / `idcp` as the supported Hermes path in this repo.
+- [x] Publishable packages under `packages/` (auth sidecar + A2A overlay + `/hooks/*`).
+- [x] Opt-in `./hermes.sh identyclaw-peer-install` (does not change stock HMAC webhooks).
 - [ ] Align Himalaya and IdentyClaw install UX (same prompts: skill path, bin shim, volumes, “recreate gateway”).
-- [ ] Decide: extract standalone release (option B) vs wrapper-only (option A).
-- [ ] If extracting: pin `idcp` version, include `SKILL.md`, smoke-test enroll + `ensure_session` + sandbox `idcp me`.
+- [ ] Decide: extract standalone GitHub repos vs monorepo `packages/` only.
+- [ ] If extracting: pin versions, smoke-test enroll + peer A2A with OpenClaw.
 - [x] Draft / file Nous feature request (generic hooks above) → [PR #83805](https://github.com/NousResearch/hermes-agent/pull/83805).
 - [ ] After #83805 merges: drop redundant PATH / `docker_volumes` patches where upstream covers `bin/`.
 - [ ] Optional: one-page practitioner quickstart link from README → this plan’s “Practitioner path”.
@@ -143,7 +145,9 @@ Practitioners who only want Passport on stock Hermes can copy `idcp/` + the skil
 - Never put JWTs or NEAR private keys in chat, skills, or the synced repo.
 - `idcp ensure_session` / `list_sessions` must keep returning metadata only (no full JWT in agent-visible output).
 - Secrets dirs stay `0700`; gateway recreate after install so mounts apply.
-- Identity auth for webhooks remains Hermes HMAC in this stack — Passport is agent identity / HOLA, not ingress auth.
+- **HMAC** `/webhooks/{route}` remains Hermes generic webhooks.
+- **Passport peer** ingress is separate: RODiT-signed `/hooks/wake` + `/hooks/agent` (opt-in peer stack).
+- Auth crypto stays in `@rodit/rodit-auth-be` (Node sidecar) — do not reimplement in Python.
 
 ## Success criteria
 

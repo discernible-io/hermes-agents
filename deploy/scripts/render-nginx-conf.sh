@@ -6,6 +6,8 @@
 #   HERMES_INGRESS_PORT  default 8443 (Telegram Bot API allowed webhook port)
 #   WEBHOOK_PORT         Hermes HMAC webhook adapter (default 8644, pod-local)
 #   TELEGRAM_WEBHOOK_PORT  Telegram adapter listen (default 8643 in pod mode)
+#   A2A_PORT             A2A JSON-RPC + /api/login* (default 9900)
+#   IDENTYCLAW_HOOKS_PORT  RODiT /hooks/* (default 9911)
 set -euo pipefail
 
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
@@ -25,6 +27,7 @@ ingress_port="${HERMES_INGRESS_PORT:-8443}"
 webhook_port="${WEBHOOK_PORT:-8644}"
 telegram_port="${TELEGRAM_WEBHOOK_PORT:-8643}"
 a2a_port="${A2A_PORT:-9900}"
+hooks_port="${IDENTYCLAW_HOOKS_PORT:-9911}"
 
 mkdir -p "$(dirname "$out")"
 
@@ -32,6 +35,8 @@ cat >"$out" <<EOF
 # TLS sidecar for Hermes Agent — public surface:
 #   Webhooks: POST /webhooks/<route> (HMAC via Hermes WEBHOOK_SECRET)
 #   Telegram: POST /telegram (TELEGRAM_WEBHOOK_SECRET)
+#   A2A: / .well-known /api/login* (Passport peer login + JSON-RPC)
+#   IdentyClaw: /hooks/wake /hooks/agent (RODiT-signed)
 # nginx terminates TLS and reverse-proxies webhook paths only.
 # Ingress listens on 8443 — Telegram Bot API only accepts 443, 80, 88, 8443.
 # Operator API stays on host HERMES_API_PORT (default 11642 → container :8642).
@@ -61,7 +66,11 @@ http {
         server 127.0.0.1:${a2a_port};
     }
 
-    # Hermes — webhooks + Telegram + A2A @ ${host}:${ingress_port}
+    upstream hermes_identyclaw_hooks {
+        server 127.0.0.1:${hooks_port};
+    }
+
+    # Hermes — webhooks + Telegram + A2A + IdentyClaw hooks @ ${host}:${ingress_port}
     server {
         listen ${ingress_port} ssl;
         http2 on;
@@ -96,6 +105,20 @@ http {
             proxy_pass http://hermes_telegram;
         }
 
+        location ^~ /hooks/ {
+            limit_req zone=hermes_ingress burst=240 nodelay;
+            limit_req zone=hermes_public burst=120 nodelay;
+            include /etc/nginx/inc/hermes-proxy.inc;
+            proxy_pass http://hermes_identyclaw_hooks;
+        }
+
+        location ^~ /api/login {
+            limit_req zone=hermes_ingress burst=240 nodelay;
+            limit_req zone=hermes_public burst=120 nodelay;
+            include /etc/nginx/inc/hermes-proxy.inc;
+            proxy_pass http://hermes_a2a;
+        }
+
         location ^~ /.well-known/ {
             limit_req zone=hermes_ingress burst=240 nodelay;
             limit_req zone=hermes_public burst=120 nodelay;
@@ -123,4 +146,4 @@ http {
 }
 EOF
 
-echo "Rendered ${out} (host=${host}, ingress=${ingress_port}, webhook_upstream=${webhook_port}, telegram_upstream=${telegram_port})"
+echo "Rendered ${out} (host=${host}, ingress=${ingress_port}, webhook_upstream=${webhook_port}, telegram_upstream=${telegram_port}, a2a=${a2a_port}, hooks=${hooks_port})"

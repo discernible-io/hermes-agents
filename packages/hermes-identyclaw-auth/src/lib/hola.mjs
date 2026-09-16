@@ -21,13 +21,14 @@ export async function createHolaLine({
   const meta = loadSessionsMeta()[baseUrl] || {};
   let tokenId = meta.tokenId;
   if (!tokenId) {
-    // Refresh session to populate tokenId via /api/me/identity
     const s = await ensureSession({ baseUrl, force: true, credentialsPath });
     tokenId = s.tokenId;
     jwt = loadJwt(baseUrl);
   }
   if (!tokenId) {
-    throw new Error("tokenId unknown — ensure Passport is minted and ensure_session succeeds");
+    throw new Error(
+      "tokenId unknown — ensure Passport is minted and ensure_session succeeds"
+    );
   }
 
   const creds = loadNearCredentials(credentialsPath);
@@ -46,7 +47,6 @@ export async function createHolaLine({
     tokenId: result.tokenId,
     recipient: result.recipient,
     timestamp: result.timestamp,
-    // no jwt, no private key
   };
 }
 

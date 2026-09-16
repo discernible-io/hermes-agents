@@ -14,9 +14,9 @@ export function appDir() {
     process.env.HERMES_HOME ||
     "";
   if (raw) return path.resolve(raw);
-  // deploy/idcp/src/lib → ../../.. = deploy/ → .. = hermes-agents/ → sibling app
-  const deployRoot = path.resolve(__dirname, "../../..");
-  const repoRoot = path.resolve(deployRoot, "..");
+  // packages/hermes-identyclaw-auth/src/lib → repo root → sibling app
+  const pkgRoot = path.resolve(__dirname, "../..");
+  const repoRoot = path.resolve(pkgRoot, "../..");
   return path.join(path.dirname(repoRoot), "hermes-agents-app");
 }
 
@@ -40,7 +40,10 @@ export function sessionsMetaPath() {
 }
 
 export function defaultBaseUrl() {
-  return (process.env.IDENTYCLAW_BASE_URL || "https://api.identyclaw.com").replace(/\/$/, "");
+  return (process.env.IDENTYCLAW_BASE_URL || "https://api.identyclaw.com").replace(
+    /\/$/,
+    ""
+  );
 }
 
 export function hostKey(baseUrl) {
@@ -60,6 +63,42 @@ export function ensureSecretsLayout() {
       /* ignore */
     }
   }
+}
+
+/** Resolve NEAR credentials file path for RoditClient (NEAR_CREDENTIALS_FILE_PATH). */
+export function resolveNearCredentialsFilePath(credentialsPath = null) {
+  if (credentialsPath) return path.resolve(credentialsPath);
+  if (process.env.NEAR_CREDENTIALS_FILE_PATH?.trim()) {
+    return path.resolve(process.env.NEAR_CREDENTIALS_FILE_PATH.trim());
+  }
+  try {
+    const creds = loadNearCredentials(null);
+    return creds.path && creds.path !== "(env)" ? creds.path : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Ensure env vars RoditClient expects before loading @rodit/rodit-auth-be.
+ * Soft: does not throw when credentials are missing (health / timestamp still work). */
+export function ensureRoditCredentialEnv(credentialsPath = null) {
+  const filePath = resolveNearCredentialsFilePath(credentialsPath);
+  if (filePath && filePath !== "(env)") {
+    process.env.NEAR_CREDENTIALS_FILE_PATH = filePath;
+  }
+  if (!process.env.RODIT_NEAR_CREDENTIALS_SOURCE?.trim()) {
+    if (process.env.NEAR_CREDENTIALS_FILE_PATH?.trim()) {
+      process.env.RODIT_NEAR_CREDENTIALS_SOURCE = "file";
+    }
+  }
+  if (!process.env.LOG_LEVEL) process.env.LOG_LEVEL = "error";
+  if (process.env.SUPPRESS_NO_CONFIG_WARNING === undefined) {
+    process.env.SUPPRESS_NO_CONFIG_WARNING = "true";
+  }
+  if (process.env.SUPPRESS_STRICTNESS_CHECK === undefined) {
+    process.env.SUPPRESS_STRICTNESS_CHECK = "true";
+  }
+  return filePath;
 }
 
 /** Load first *.json in near-credentials, or env / explicit path. */
@@ -83,7 +122,6 @@ export function loadNearCredentials(credentialsPath) {
   if (files.length === 0) {
     throw new Error(`No *.json in ${dir} — run: idcp enroll`);
   }
-  // Prefer .active pointer if present
   const active = path.join(dir, ".active");
   let chosen = files[0];
   if (fs.existsSync(active)) {
@@ -140,7 +178,10 @@ export function loadSessionsMeta() {
 }
 
 export function loadHolaClient() {
-  // CJS package vendored next to this ESM tree
   const vendor = path.join(__dirname, "../../vendor/hola-client/index.js");
   return require(vendor);
+}
+
+export function packageRoot() {
+  return path.resolve(__dirname, "../..");
 }

@@ -19,6 +19,9 @@
 #   ./hermes.sh idcp-setup     # Resume Passport: auto enroll → purchase → session
 #   ./hermes.sh idcp-install   # IdentyClaw helper + skill into app dir
 #   ./hermes.sh idcp <cmd…>    # ensure_session | create_hola | …
+#   ./hermes.sh identyclaw-peer-install  # opt-in A2A overlay + /hooks/* + auth sidecar
+#   ./hermes.sh identyclaw-auth-start    # start localhost auth sidecar on host
+#   ./hermes.sh identyclaw-auth-stop
 #   ./hermes.sh himalaya-install
 #   ./hermes.sh himalaya-password
 #   ./hermes.sh himalaya-test
@@ -29,11 +32,20 @@ set -euo pipefail
 [[ "${TRACE:-0}" == 1 ]] && set -x
 
 HERMES_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERMES_REPO="$(cd "${HERMES_ROOT}/.." && pwd)"
 # shellcheck source=scripts/lib.sh
 source "$HERMES_ROOT/scripts/lib.sh"
 
 usage() {
-  sed -n '2,26p' "$0" | sed 's/^# \?//'
+  sed -n '2,30p' "$0" | sed 's/^# \?//'
+}
+
+identyclaw_peer_enabled() {
+  [[ -f "$(hermes_app_dir)/.identyclaw-peer-enabled" ]]
+}
+
+identyclaw_auth_pkg() {
+  printf '%s' "${HERMES_REPO}/packages/hermes-identyclaw-auth"
 }
 
 # Shared hermes gateway run args (caller adds --pod or host -p ports).
@@ -60,6 +72,25 @@ hermes_gateway_run_args() {
     -e "HOME=${app}"
     -e "PATH=${app}/bin:/opt/data/bin:/opt/hermes/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
   )
+
+  # Passport peer stack: auth sidecar runs on the host; gateway reaches it via host-gateway.
+  if identyclaw_peer_enabled; then
+    _out+=(--add-host=host.containers.internal:host-gateway)
+    _out+=(-e "IDENTYCLAW_AUTH_HOST=${IDENTYCLAW_AUTH_HOST:-host.containers.internal}")
+    _out+=(-e "IDENTYCLAW_AUTH_PORT=${IDENTYCLAW_AUTH_PORT:-9910}")
+    _out+=(-e "IDENTYCLAW_HOOKS_PORT=${IDENTYCLAW_HOOKS_PORT:-9911}")
+    _out+=(-e "IDENTYCLAW_HOOKS_HOST=0.0.0.0")
+    if [[ -n "${NEAR_CREDENTIALS_FILE_PATH:-}" ]]; then
+      _out+=(-e "NEAR_CREDENTIALS_FILE_PATH=${NEAR_CREDENTIALS_FILE_PATH}")
+      _out+=(-e "RODIT_NEAR_CREDENTIALS_SOURCE=file")
+    fi
+    if [[ -n "${IDENTYCLAW_JWT_AUDIENCE:-}" ]]; then
+      _out+=(-e "IDENTYCLAW_JWT_AUDIENCE=${IDENTYCLAW_JWT_AUDIENCE}")
+    fi
+    if [[ -n "${A2A_PUBLIC_URL:-}" ]]; then
+      _out+=(-e "A2A_PUBLIC_URL=${A2A_PUBLIC_URL}")
+    fi
+  fi
 
   envf="${HERMES_GATEWAY_ENV_FILE_HOST:-}"
   if [[ -z "$envf" || ! -f "$envf" ]]; then
@@ -579,6 +610,159 @@ cmd_idcp_install() {
   fi
 }
 
+# Opt-in Passport peer stack: overlay A2A + RODiT /hooks/* + auth sidecar (does not replace HMAC webhooks).
+cmd_identyclaw_peer_install() {
+  ensure_app_layout
+  ensure_idcp_layout
+  load_env
+  local app pkg_auth pkg_a2a pkg_hooks plugins_dir
+  app="$(hermes_app_dir)"
+  pkg_auth="$(identyclaw_auth_pkg)"
+  pkg_a2a="${HERMES_REPO}/packages/hermes-identyclaw-a2a"
+  pkg_hooks="${HERMES_REPO}/packages/hermes-identyclaw-webhooks"
+  plugins_dir="${app}/plugins"
+
+  if ! command -v npm >/dev/null 2>&1 || ! command -v node >/dev/null 2>&1; then
+    echo "node + npm required for IdentyClaw peer stack" >&2
+    exit 1
+  fi
+  [[ -d "$pkg_auth" && -d "$pkg_a2a" && -d "$pkg_hooks" ]] || {
+    echo "missing packages under ${HERMES_REPO}/packages/" >&2
+    exit 1
+  }
+
+  _idcp_install_core
+  echo "Installing auth package deps in ${pkg_auth} ..."
+  (cd "$pkg_auth" && npm install --omit=dev)
+
+  mkdir -p "$plugins_dir"
+  rm -rf "${plugins_dir}/a2a-platform" "${plugins_dir}/identyclaw-webhooks"
+  cp -a "$pkg_a2a" "${plugins_dir}/a2a-platform"
+  cp -a "$pkg_hooks" "${plugins_dir}/identyclaw-webhooks"
+  # Drop tests/node_modules copies if any
+  rm -rf "${plugins_dir}/a2a-platform/__pycache__" "${plugins_dir}/identyclaw-webhooks/__pycache__"
+
+  # Sidecar launcher on PATH for host + sandboxes
+  cat >"${app}/bin/identyclaw-auth-sidecar" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export IDENTYCLAW_HOME="\${IDENTYCLAW_HOME:-${app}}"
+export HERMES_HOME="\${HERMES_HOME:-\$IDENTYCLAW_HOME}"
+exec node "${pkg_auth}/bin/sidecar.mjs" "\$@"
+EOF
+  chmod 755 "${app}/bin/identyclaw-auth-sidecar"
+
+  # Enable plugins in config.yaml (opt-in; allow tool override for a2a overlay)
+  if command -v python3 >/dev/null 2>&1 && [[ -f "${app}/config.yaml" ]]; then
+    python3 - "$app" <<'PY'
+import pathlib, sys
+app = pathlib.Path(sys.argv[1])
+cfg = app / "config.yaml"
+text = cfg.read_text()
+marker = "# identyclaw-peer (managed by hermes.sh identyclaw-peer-install)"
+block = f"""
+{marker}
+plugins:
+  enabled:
+    - a2a-platform
+    - identyclaw-webhooks
+  entries:
+    a2a-platform:
+      enabled: true
+      allow_tool_override: true
+    identyclaw-webhooks:
+      enabled: true
+platforms:
+  a2a:
+    enabled: true
+  identyclaw_hooks:
+    enabled: true
+"""
+if marker in text:
+    print("config.yaml already has identyclaw-peer marker (leaving block; merge manually if needed)")
+else:
+    cfg.write_text(text.rstrip() + "\n" + block + "\n")
+    print(f"Appended identyclaw-peer plugin enablement to {cfg}")
+    print("Review/merge if you already had a plugins: section.")
+PY
+  fi
+
+  # Resolve NEAR creds path for sidecar / gateway
+  local cred=""
+  if [[ -d "${app}/secrets/near-credentials" ]]; then
+    cred="$(find "${app}/secrets/near-credentials" -maxdepth 1 -name '*.json' | head -1 || true)"
+  fi
+  if [[ -n "$cred" ]]; then
+    upsert_env_local_kv "$(hermes_env_file)" NEAR_CREDENTIALS_FILE_PATH "$cred"
+    upsert_env_local_kv "$(hermes_env_file)" RODIT_NEAR_CREDENTIALS_SOURCE file
+    # Also expose to gateway .env if present
+    if [[ -f "$(hermes_gateway_env_file)" ]]; then
+      upsert_env_local_kv "$(hermes_gateway_env_file)" NEAR_CREDENTIALS_FILE_PATH "$cred"
+      upsert_env_local_kv "$(hermes_gateway_env_file)" RODIT_NEAR_CREDENTIALS_SOURCE file
+    fi
+  fi
+  upsert_env_local_kv "$(hermes_env_file)" IDENTYCLAW_AUTH_PORT "${IDENTYCLAW_AUTH_PORT:-9910}"
+  upsert_env_local_kv "$(hermes_env_file)" IDENTYCLAW_HOOKS_PORT "${IDENTYCLAW_HOOKS_PORT:-9911}"
+
+  touch "${app}/.identyclaw-peer-enabled"
+  echo ""
+  echo "IdentyClaw peer stack installed (opt-in)."
+  echo "  Plugins → ${plugins_dir}/a2a-platform , identyclaw-webhooks"
+  echo "  Flag    → ${app}/.identyclaw-peer-enabled"
+  echo ""
+  echo "Next:"
+  echo "  1. Set IDENTYCLAW_JWT_AUDIENCE=<passport owner_id> in env.local / .env"
+  echo "  2. Set A2A_PUBLIC_URL to your public HTTPS base (Passport webhook_url)"
+  echo "  3. ./hermes.sh identyclaw-auth-start"
+  echo "  4. ./hermes.sh start   # recreate gateway + (pod) nginx with /hooks + /api/login"
+  echo "  5. ./hermes.sh build-nginx && restart if in pod mode"
+}
+
+cmd_identyclaw_auth_start() {
+  ensure_app_layout
+  load_env
+  local app pkg pidfile logfile port
+  app="$(hermes_app_dir)"
+  pkg="$(identyclaw_auth_pkg)"
+  pidfile="${app}/run/identyclaw-auth.pid"
+  logfile="${app}/logs/identyclaw-auth.log"
+  port="${IDENTYCLAW_AUTH_PORT:-9910}"
+  mkdir -p "${app}/run" "${app}/logs"
+  if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+    echo "Auth sidecar already running (pid $(cat "$pidfile"))"
+    return 0
+  fi
+  [[ -d "$pkg/node_modules" ]] || (cd "$pkg" && npm install --omit=dev)
+  if [[ -z "${NEAR_CREDENTIALS_FILE_PATH:-}" ]]; then
+    local cred
+    cred="$(find "${app}/secrets/near-credentials" -maxdepth 1 -name '*.json' 2>/dev/null | head -1 || true)"
+    [[ -n "$cred" ]] && export NEAR_CREDENTIALS_FILE_PATH="$cred" RODIT_NEAR_CREDENTIALS_SOURCE=file
+  fi
+  export IDENTYCLAW_HOME="$app" HERMES_HOME="$app" IDENTYCLAW_AUTH_PORT="$port"
+  nohup node "${pkg}/bin/sidecar.mjs" --port "$port" >>"$logfile" 2>&1 &
+  echo $! >"$pidfile"
+  sleep 0.3
+  if kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+    echo "Auth sidecar listening on 127.0.0.1:${port} (pid $(cat "$pidfile"), log ${logfile})"
+  else
+    echo "Auth sidecar failed to start — see ${logfile}" >&2
+    exit 1
+  fi
+}
+
+cmd_identyclaw_auth_stop() {
+  local app pidfile
+  app="$(hermes_app_dir)"
+  pidfile="${app}/run/identyclaw-auth.pid"
+  if [[ -f "$pidfile" ]]; then
+    kill "$(cat "$pidfile")" 2>/dev/null || true
+    rm -f "$pidfile"
+    echo "Auth sidecar stopped"
+  else
+    echo "No auth sidecar pidfile"
+  fi
+}
+
 cmd_idcp() {
   ensure_app_layout
   ensure_idcp_layout
@@ -810,6 +994,9 @@ main() {
     idcp-setup) cmd_idcp_setup "$@" ;;
     idcp-install) cmd_idcp_install "$@" ;;
     idcp) cmd_idcp "$@" ;;
+    identyclaw-peer-install) cmd_identyclaw_peer_install "$@" ;;
+    identyclaw-auth-start) cmd_identyclaw_auth_start "$@" ;;
+    identyclaw-auth-stop) cmd_identyclaw_auth_stop "$@" ;;
     himalaya-install) cmd_himalaya_install "$@" ;;
     himalaya-password) cmd_himalaya_password "$@" ;;
     himalaya-test) cmd_himalaya_test "$@" ;;
