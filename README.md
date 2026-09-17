@@ -4,7 +4,7 @@
 
 # Hermes Agent ☤
 
-**Mint:** [Get an IdentyClaw Passport](https://purchase.identyclaw.com) (buy once — no subscription). Then use this fork.
+**Mint:** [Get an IdentyClaw Passport](https://purchase.identyclaw.com) (buy once — no subscription). Wire it into Hermes via this fork’s Podman path **or** the [vanilla packages path](#stock-hermes-vanilla-install).
 
 **This is [Discernible](https://www.discernible.io/)'s fork of
 [Nous Research Hermes Agent](https://github.com/NousResearch/hermes-agent).**
@@ -32,9 +32,12 @@ Operator reference: [`deploy/README.md`](./deploy/README.md). Product overview:
 [purchase.identyclaw.com](https://purchase.identyclaw.com).
 
 If you only want stock Hermes, use
-[upstream](https://github.com/NousResearch/hermes-agent). The rest of this
-README still describes the Nous agent; skip to
-[IdentyClaw Passport](#identyclaw-passport-discernible) for the fork-specific
+[upstream](https://github.com/NousResearch/hermes-agent). To add Passport to an
+**existing vanilla install** without this Podman layout, see
+[Stock Hermes (vanilla install)](#stock-hermes-vanilla-install) and
+[`packages/README.md`](./packages/README.md). The rest of this README still
+describes the Nous agent; skip to
+[IdentyClaw Passport](#identyclaw-passport-discernible) for the fork operator
 path.
 
 <p align="center">
@@ -208,7 +211,105 @@ API login via `idcp` is enough for federated HTTP APIs. To **be** a Passport pee
 # pod mode: ./hermes.sh build-nginx && ./hermes.sh start
 ```
 
-This does **not** replace Hermes HMAC `/webhooks/{route}`. Stock Nous Hermes users can copy [`packages/`](./packages/README.md) without this Podman wrapper.
+This does **not** replace Hermes HMAC `/webhooks/{route}`. For an existing
+upstream install (no `hermes.sh`), use the [vanilla path](#stock-hermes-vanilla-install)
+below.
+
+### Stock Hermes (vanilla install)
+
+You do **not** need this fork’s Podman wrapper. Keep running
+[NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) under
+`$HERMES_HOME` (usually `~/.hermes`). Pull only the publishable packages from
+this repo (or a release tarball of [`packages/`](./packages/README.md)).
+
+Set the secrets root so `idcp` does not look for a sibling `hermes-agents-app/`:
+
+```bash
+export HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
+# optional alias used by idcp first: export IDENTYCLAW_HOME="$HERMES_HOME"
+```
+
+Secrets land at `$HERMES_HOME/secrets/near-credentials/` and
+`$HERMES_HOME/secrets/identyclaw/`. Checkout / mint stays a **human** step
+([purchase.identyclaw.com](https://purchase.identyclaw.com)); never paste NEAR
+keys or JWTs into chat.
+
+#### Tier 1 — Call federated peers (usual need)
+
+Passport as *client*: enroll, mint once, then `idcp ensure_session [--base …]`
+per API host. No A2A overlay, no `/hooks/*`, no `WEBHOOK_SECRET`.
+
+```bash
+# From a clone of this repo (or a packages release):
+cd packages/hermes-identyclaw-auth
+npm install --omit=dev
+mkdir -p "$HERMES_HOME/bin"
+ln -sf "$(pwd)/bin/idcp.mjs" "$HERMES_HOME/bin/idcp"
+# Ensure $HERMES_HOME/bin is on PATH for CLI, gateway, and terminal sandboxes.
+
+mkdir -p "$HERMES_HOME/skills/identity/identyclaw"
+cp -a ../../deploy/skills/identyclaw/. "$HERMES_HOME/skills/identity/identyclaw/"
+
+idcp enroll                  # NEAR implicit account → secrets/near-credentials/
+# Human: mint Passport with that account_id at purchase.identyclaw.com
+idcp ensure_session          # home JWT (api.identyclaw.com)
+idcp me
+idcp ensure_session --base https://api.lastcradle.io   # remint per peer
+```
+
+Optional docs MCP: `hermes mcp add IdentyClawDocs --url https://api.identyclaw.com/mcp`.
+
+Day-to-day peer calls: same auth contract as [step 6](#6-log-in-to-any-federated-peer-no-api-key)
+(`GET /api/login/timestamp` → sign → `POST /api/login` → Bearer). Prefer
+`idcp request … --base <peer>`; never send a home JWT to another host.
+
+#### Tier 2 — Be a Passport peer (optional)
+
+Only if other Passport agents should A2A or RODiT-wake *you*. Requires Tier 1
+plus the auth sidecar and two platform plugins (last-writer-wins over bundled
+A2A when installed as `a2a-platform`):
+
+```bash
+AUTH="$(pwd)/packages/hermes-identyclaw-auth"   # adjust to your checkout
+mkdir -p "$HERMES_HOME/plugins"
+cp -a packages/hermes-identyclaw-a2a/. "$HERMES_HOME/plugins/a2a-platform/"
+cp -a packages/hermes-identyclaw-webhooks/. "$HERMES_HOME/plugins/identyclaw-webhooks/"
+```
+
+Enable in `$HERMES_HOME/config.yaml` (shape may vary by Hermes version):
+
+```yaml
+plugins:
+  enabled:
+    - a2a-platform
+    - identyclaw-webhooks
+  entries:
+    a2a-platform:
+      enabled: true
+      allow_tool_override: true
+    identyclaw-webhooks:
+      enabled: true
+```
+
+Env (`.env` / shell — not secrets for mint):
+
+| Variable | Purpose |
+|----------|---------|
+| `IDENTYCLAW_JWT_AUDIENCE` | Passport `owner_id` / audience the sidecar accepts |
+| `A2A_PUBLIC_URL` | Public HTTPS base peers use for A2A |
+| `IDENTYCLAW_AUTH_PORT` | Sidecar port (default `9910`) |
+| `NEAR_CREDENTIALS_FILE_PATH` | Absolute path to the NEAR key JSON |
+| `IDENTYCLAW_HOOKS_PORT` | `/hooks/*` listen port (default `9911`) |
+
+```bash
+NEAR_CREDENTIALS_FILE_PATH=… IDENTYCLAW_JWT_AUDIENCE=… \
+  node "$AUTH/bin/sidecar.mjs" --port "${IDENTYCLAW_AUTH_PORT:-9910}"
+# Point Passport metadata.webhook_url / A2A_PUBLIC_URL at your public HTTPS base.
+# Restart the Hermes gateway so plugins load.
+```
+
+Hermes HMAC `/webhooks/{route}` is unchanged and unrelated; `WEBHOOK_SECRET` is
+only for that path. Full package notes: [`packages/README.md`](./packages/README.md).
 
 ### 6. Log in to any federated peer (no API key)
 

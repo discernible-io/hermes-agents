@@ -4,12 +4,19 @@ IdentyClaw Passport helpers for Hermes: **`idcp` CLI** (host login / HOLA) plus 
 
 ## Install (stock Hermes)
 
+Point secrets at your Hermes home (not the fork’s sibling app dir):
+
 ```bash
+export HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 npm install --omit=dev
-# put bin on PATH or copy to $HERMES_HOME/bin/idcp
-node bin/idcp.mjs enroll
-node bin/idcp.mjs ensure_session
+mkdir -p "$HERMES_HOME/bin"
+ln -sf "$(pwd)/bin/idcp.mjs" "$HERMES_HOME/bin/idcp"
+# ensure $HERMES_HOME/bin is on PATH
+idcp enroll
+idcp ensure_session
 ```
+
+Full Tier 1 / Tier 2 playbook: [`../README.md`](../README.md).
 
 Sidecar (for platform plugins):
 
