@@ -823,12 +823,11 @@ cmd_himalaya_test() {
 }
 
 cmd_identyclaw_peer_install() {
-  local app envf audience pub
+  local app audience pub
   require_podman
   ensure_app_layout
   load_env
   app="$(hermes_app_dir)"
-  envf="$(hermes_env_file)"
 
   if container_is_running "${HERMES_CONTAINER:-hermes}" \
     || container_is_running "${HERMES_NGINX_CONTAINER:-hermes-nginx}"; then

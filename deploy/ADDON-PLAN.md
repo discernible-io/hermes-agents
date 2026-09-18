@@ -19,6 +19,7 @@ Stock Nous Hermes does **not** ship IdentyClaw Passport / RODiT. This repo alrea
 | Layer | Role | Location |
 |-------|------|----------|
 | **CLI** | Enroll, JWT session, HOLA, API calls | Synced `idcp/` → mounted `/opt/idcp` |
+| **A2A overlay** | Passport JWT on A2A (not static bearer) | `packages/hermes-identyclaw-a2a` → `$HERMES_HOME/plugins/a2a-platform/` + sidecar `:9910` |
 | **Skill** | Agent instructions: call `idcp`, never invent crypto / paste JWTs | `skills/identyclaw/SKILL.md` → copied to `hermes-agents-app/skills/identity/identyclaw/` |
 | **Secrets** | NEAR keys + JWT cache | `hermes-agents-app/secrets/` only (never in image or git) |
 
