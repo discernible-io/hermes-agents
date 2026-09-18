@@ -203,9 +203,8 @@ API login via `idcp` is enough for federated HTTP APIs. To **be** a Passport pee
 
 ```bash
 ./hermes.sh identyclaw-peer-install
-# Set in hermes-agents-app/env.local (and .env as needed):
-#   IDENTYCLAW_JWT_AUDIENCE=<passport owner_id>
-#   A2A_PUBLIC_URL=https://your-public-host:8443
+# Set A2A_PUBLIC_URL=https://your-public-host:8443 (Agent Card).
+# JWT aud comes from RoditClient + NEAR_CREDENTIALS_FILE_PATH — do not hardcode.
 ./hermes.sh identyclaw-auth-start
 ./hermes.sh start
 # pod mode: ./hermes.sh build-nginx && ./hermes.sh start
@@ -295,14 +294,14 @@ Env (`.env` / shell — not secrets for mint):
 
 | Variable | Purpose |
 |----------|---------|
-| `IDENTYCLAW_JWT_AUDIENCE` | Passport `owner_id` / audience the sidecar accepts |
-| `A2A_PUBLIC_URL` | Public HTTPS base peers use for A2A |
+| `NEAR_CREDENTIALS_FILE_PATH` | Absolute path to the NEAR key JSON (JWT `aud` = passport `owner_id`) |
+| `A2A_PUBLIC_URL` | Public HTTPS base peers use for A2A Agent Card |
 | `IDENTYCLAW_AUTH_PORT` | Sidecar port (default `9910`) |
-| `NEAR_CREDENTIALS_FILE_PATH` | Absolute path to the NEAR key JSON |
 | `IDENTYCLAW_HOOKS_PORT` | `/hooks/*` listen port (default `9911`) |
+| `IDENTYCLAW_JWT_AUDIENCE` | Optional fallback only — prefer `RoditClient.getConfigOwnRodit()` |
 
 ```bash
-NEAR_CREDENTIALS_FILE_PATH=… IDENTYCLAW_JWT_AUDIENCE=… \
+NEAR_CREDENTIALS_FILE_PATH=… \
   node "$AUTH/bin/sidecar.mjs" --port "${IDENTYCLAW_AUTH_PORT:-9910}"
 # Point Passport metadata.webhook_url / A2A_PUBLIC_URL at your public HTTPS base.
 # Restart the Hermes gateway so plugins load.

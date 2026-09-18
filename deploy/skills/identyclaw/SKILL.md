@@ -59,7 +59,7 @@ Operators enable peer interoperability (OpenClaw / other Passport agents):
 
 ```bash
 ./hermes.sh identyclaw-peer-install
-# set IDENTYCLAW_JWT_AUDIENCE + A2A_PUBLIC_URL
+# set A2A_PUBLIC_URL; JWT aud from RoditClient (NEAR credentials)
 ./hermes.sh identyclaw-auth-start
 ./hermes.sh start
 ```

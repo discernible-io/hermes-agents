@@ -27,6 +27,29 @@ def test_sidecar_base_default(monkeypatch):
     assert mod.sidecar_base() == "http://127.0.0.1:9910"
 
 
+def test_own_passport_client_calls_sidecar(monkeypatch):
+    mod = _load(
+        "ic_a2a_sidecar_own",
+        REPO / "packages" / "hermes-identyclaw-a2a" / "sidecar_client.py",
+    )
+    captured = {}
+
+    def fake_get(path, timeout=10.0):
+        captured["path"] = path
+        captured["timeout"] = timeout
+        return {
+            "ok": True,
+            "owner_id": "abc123",
+            "token_id": "tok",
+            "issuer": "https://api.identyclaw.com",
+        }
+
+    monkeypatch.setattr(mod, "_get", fake_get)
+    out = mod.own_passport()
+    assert captured["path"] == "/v1/own_passport"
+    assert out["owner_id"] == "abc123"
+
+
 def test_wake_normalize():
     # Load only the pure helpers by exec'ing a tiny snippet from adapter
     # without importing gateway — duplicate the JSON helper contract.
