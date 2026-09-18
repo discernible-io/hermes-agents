@@ -41,11 +41,72 @@ usage() {
 }
 
 identyclaw_peer_enabled() {
-  [[ -f "$(hermes_app_dir)/.identyclaw-peer-enabled" ]]
+  # App dir is often 0700/UID 10000 after prepare_app_for_container — host test -f fails.
+  local flag
+  flag="$(hermes_app_dir)/.identyclaw-peer-enabled"
+  [[ -n "${IDENTYCLAW_PEER_ACTIVE:-}" ]] && return 0
+  [[ -f "$flag" ]] && return 0
+  command -v podman >/dev/null 2>&1 && podman unshare test -f "$flag" 2>/dev/null
+}
+
+# Snapshot while the app tree is still host-readable (before prepare_app_for_container).
+identyclaw_peer_snapshot() {
+  if [[ -f "$(hermes_app_dir)/.identyclaw-peer-enabled" ]]; then
+    export IDENTYCLAW_PEER_ACTIVE=1
+  else
+    unset IDENTYCLAW_PEER_ACTIVE || true
+  fi
 }
 
 identyclaw_auth_pkg() {
   printf '%s' "${HERMES_REPO}/packages/hermes-identyclaw-auth"
+}
+
+identyclaw_auth_container() {
+  printf '%s' "${HERMES_IDENTYCLAW_AUTH_CONTAINER:-hermes-identyclaw-auth}"
+}
+
+# Auth sidecar shares the gateway network namespace (localhost-only bind). Sidecar
+# intentionally refuses non-loopback hosts — do not use host.containers.internal.
+start_identyclaw_auth_container() {
+  identyclaw_peer_enabled || return 0
+  local app z name port cred args=()
+  app="$(hermes_app_dir)"
+  z="$(selinux_mount_suffix)"
+  name="$(identyclaw_auth_container)"
+  port="${IDENTYCLAW_AUTH_PORT:-9910}"
+  cred="${NEAR_CREDENTIALS_FILE_PATH:-}"
+
+  podman rm -f "$name" 2>/dev/null || true
+
+  args=(
+    run -d --replace
+    --name "$name"
+    --restart always
+  )
+  if hermes_is_pod_mode && podman pod exists "${HERMES_POD:-hermes-agent-pod}" 2>/dev/null; then
+    args+=(--pod "${HERMES_POD}")
+  else
+    args+=(--network "container:${HERMES_CONTAINER}")
+  fi
+  args+=(
+    -v "${app}:/opt/data:rw${z}"
+    -v "${app}:${app}:rw${z}"
+    -v "${HERMES_ROOT}/idcp:/opt/idcp:ro${z}"
+    -e "IDENTYCLAW_HOME=${app}"
+    -e "HERMES_HOME=${app}"
+    -e "IDENTYCLAW_AUTH_PORT=${port}"
+  )
+  if [[ -n "$cred" ]]; then
+    args+=(-e "NEAR_CREDENTIALS_FILE_PATH=${cred}" -e "RODIT_NEAR_CREDENTIALS_SOURCE=file")
+  fi
+  if [[ -n "${IDENTYCLAW_JWT_AUDIENCE:-}" ]]; then
+    args+=(-e "IDENTYCLAW_JWT_AUDIENCE=${IDENTYCLAW_JWT_AUDIENCE}")
+  fi
+  # Reuse the Hermes image (ships Node); override entrypoint to the auth sidecar.
+  args+=(--entrypoint node "$HERMES_IMAGE" /opt/idcp/bin/sidecar.mjs --port "$port")
+  podman "${args[@]}"
+  echo "Auth sidecar ${name} on gateway network 127.0.0.1:${port}"
 }
 
 # Shared hermes gateway run args (caller adds --pod or host -p ports).
@@ -73,13 +134,12 @@ hermes_gateway_run_args() {
     -e "PATH=${app}/bin:/opt/data/bin:/opt/hermes/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
   )
 
-  # Passport peer stack: auth sidecar runs on the host; gateway reaches it via host-gateway.
+  # Passport peer stack: auth sidecar shares the gateway netns (127.0.0.1).
   if identyclaw_peer_enabled; then
-    _out+=(--add-host=host.containers.internal:host-gateway)
-    _out+=(-e "IDENTYCLAW_AUTH_HOST=${IDENTYCLAW_AUTH_HOST:-host.containers.internal}")
+    _out+=(-e "IDENTYCLAW_AUTH_HOST=${IDENTYCLAW_AUTH_HOST:-127.0.0.1}")
     _out+=(-e "IDENTYCLAW_AUTH_PORT=${IDENTYCLAW_AUTH_PORT:-9910}")
     _out+=(-e "IDENTYCLAW_HOOKS_PORT=${IDENTYCLAW_HOOKS_PORT:-9911}")
-    _out+=(-e "IDENTYCLAW_HOOKS_HOST=0.0.0.0")
+    _out+=(-e "IDENTYCLAW_HOOKS_HOST=${IDENTYCLAW_HOOKS_HOST:-127.0.0.1}")
     if [[ -n "${NEAR_CREDENTIALS_FILE_PATH:-}" ]]; then
       _out+=(-e "NEAR_CREDENTIALS_FILE_PATH=${NEAR_CREDENTIALS_FILE_PATH}")
       _out+=(-e "RODIT_NEAR_CREDENTIALS_SOURCE=file")
@@ -124,6 +184,7 @@ cmd_start_standalone() {
   if podman pod exists "${HERMES_POD:-hermes-agent-pod}" 2>/dev/null; then
     stop_hermes_pod_stack
   else
+    podman rm -f "$(identyclaw_auth_container)" 2>/dev/null || true
     podman rm -f "$HERMES_CONTAINER" 2>/dev/null || true
   fi
   hermes_gateway_run_args args
@@ -138,6 +199,7 @@ cmd_start_standalone() {
   args+=("$HERMES_IMAGE" gateway run)
 
   podman "${args[@]}"
+  start_identyclaw_auth_container
   echo "Started ${HERMES_CONTAINER} (standalone, restart=always) — API ${HERMES_API_PORT}, Telegram webhook ${HERMES_TELEGRAM_PORT}"
 }
 
@@ -178,6 +240,7 @@ cmd_start_pod() {
   fi
   args+=("$HERMES_IMAGE" gateway run)
   podman "${args[@]}"
+  start_identyclaw_auth_container
 
   nginx_conf="${app}/nginx/nginx.conf"
   echo "Starting nginx sidecar ${HERMES_NGINX_CONTAINER} ..."
@@ -240,6 +303,9 @@ cmd_start() {
     staged_env=""
     unset HERMES_GATEWAY_ENV_FILE_HOST || true
   fi
+
+  # Peer flag must be snapshotted before chown hides the 0700 app tree from the host.
+  identyclaw_peer_snapshot
 
   prepare_app_for_container
 
@@ -754,10 +820,10 @@ PY
   echo ""
   echo "Next:"
   echo "  1. Set IDENTYCLAW_JWT_AUDIENCE=<passport owner_id> in env.local / .env"
-  echo "  2. Set A2A_PUBLIC_URL to your public HTTPS base (Passport webhook_url)"
-  echo "  3. ./hermes.sh identyclaw-auth-start"
-  echo "  4. ./hermes.sh start   # recreate gateway + (pod) nginx with /hooks + /api/login"
-  echo "  5. ./hermes.sh build-nginx && restart if in pod mode"
+  echo "  2. Set A2A_PUBLIC_URL to your public HTTPS base (same host:port as Telegram ingress)"
+  echo "  3. ./hermes.sh start   # recreates gateway + in-pod auth sidecar + nginx /hooks + /api/login"
+  echo "  4. ./hermes.sh build-nginx && restart if nginx routes are stale"
+  echo "  (Optional host-only debug: ./hermes.sh identyclaw-auth-start — not used by the gateway)"
 }
 
 cmd_identyclaw_auth_start() {
@@ -859,6 +925,7 @@ cmd_stop() {
     stop_hermes_pod_stack
     echo "Stopped pod ${HERMES_POD:-hermes-agent-pod}"
   else
+    podman rm -f "$(identyclaw_auth_container)" 2>/dev/null || true
     podman stop "$HERMES_CONTAINER" 2>/dev/null || true
     podman rm -f "$HERMES_CONTAINER" 2>/dev/null || true
     echo "Stopped ${HERMES_CONTAINER}"

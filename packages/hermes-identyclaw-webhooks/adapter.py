@@ -8,7 +8,7 @@ import logging
 import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Optional
+from typing import Any, Dict, Optional
 from urllib.parse import urlsplit
 
 from gateway.config import Platform
@@ -215,6 +215,9 @@ class IdentyClawHooksAdapter(BasePlatformAdapter):
     async def send(self, chat_id: str, text: str, **kwargs) -> SendResult:
         # Hooks platform is inbound-primary; outbound uses send_rodit_webhook tool.
         return SendResult(success=True, message_id="")
+
+    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+        return {"name": chat_id or "hooks", "type": "dm"}
 
     def enqueue_wake(self, text: str, mode: str = "now") -> None:
         """Session nudge — framed as a system-ish inbound note."""

@@ -1344,11 +1344,14 @@ PY
 }
 
 stop_hermes_pod_stack() {
-  local name nginx_name pod_name
+  local name nginx_name pod_name auth_name
   load_env
   name="${HERMES_CONTAINER:-hermes}"
   nginx_name="${HERMES_NGINX_CONTAINER:-hermes-nginx}"
+  auth_name="${HERMES_IDENTYCLAW_AUTH_CONTAINER:-hermes-identyclaw-auth}"
   pod_name="${HERMES_POD:-hermes-agent-pod}"
+  podman stop "$auth_name" 2>/dev/null || true
+  podman rm -f "$auth_name" 2>/dev/null || true
   podman stop "$name" 2>/dev/null || true
   podman rm -f "$name" 2>/dev/null || true
   podman stop "$nginx_name" 2>/dev/null || true
