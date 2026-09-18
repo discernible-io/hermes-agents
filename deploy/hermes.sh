@@ -378,6 +378,7 @@ text = cfg.read_text()
 vols = [
     f'    - "{repo / "idcp"}:/opt/idcp:ro"',
     f'    - "{app / "secrets"}:/opt/data/secrets:ro"',
+    f'    - "{app / "secrets" / "identyclaw"}:/opt/data/secrets/identyclaw:rw"',
     f'    - "{app / "bin"}:/opt/data/bin:ro"',
 ]
 marker = "# idcp-docker-volumes (managed by hermes.sh idcp-install)"
@@ -655,14 +656,6 @@ cmd_identyclaw_peer_install() {
       rm -rf $(printf '%q' "$app/plugins/a2a-platform/__pycache__") \
         $(printf '%q' "$app/plugins/identyclaw-webhooks/__pycache__")
     "
-    podman unshare tee "${app}/bin/identyclaw-auth-sidecar" >/dev/null <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-export IDENTYCLAW_HOME="\${IDENTYCLAW_HOME:-${app}}"
-export HERMES_HOME="\${HERMES_HOME:-\$IDENTYCLAW_HOME}"
-exec node "${pkg_auth}/bin/sidecar.mjs" "\$@"
-EOF
-    podman unshare chmod 755 "${app}/bin/identyclaw-auth-sidecar"
     podman unshare touch "${app}/.identyclaw-peer-enabled"
     # Keep hermes ownership on new files when the tree is UID 10000.
     podman unshare bash -c "
@@ -671,7 +664,6 @@ EOF
       chown -R \"\$owner:\$owner\" \
         \"\$app/plugins/a2a-platform\" \
         \"\$app/plugins/identyclaw-webhooks\" \
-        \"\$app/bin/identyclaw-auth-sidecar\" \
         \"\$app/.identyclaw-peer-enabled\" 2>/dev/null || true
     "
   else
@@ -680,16 +672,10 @@ EOF
     cp -a "$pkg_a2a" "${plugins_dir}/a2a-platform"
     cp -a "$pkg_hooks" "${plugins_dir}/identyclaw-webhooks"
     rm -rf "${plugins_dir}/a2a-platform/__pycache__" "${plugins_dir}/identyclaw-webhooks/__pycache__"
-    cat >"${app}/bin/identyclaw-auth-sidecar" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-export IDENTYCLAW_HOME="\${IDENTYCLAW_HOME:-${app}}"
-export HERMES_HOME="\${HERMES_HOME:-\$IDENTYCLAW_HOME}"
-exec node "${pkg_auth}/bin/sidecar.mjs" "\$@"
-EOF
-    chmod 755 "${app}/bin/identyclaw-auth-sidecar"
     touch "${app}/.identyclaw-peer-enabled"
   fi
+  # Refresh container-safe /opt/idcp wrappers (never bake a host packages path).
+  ensure_idcp_layout
 
   # Enable plugins in config.yaml (opt-in; allow tool override for a2a overlay)
   if command -v python3 >/dev/null 2>&1; then

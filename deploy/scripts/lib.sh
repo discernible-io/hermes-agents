@@ -357,9 +357,12 @@ ensure_idcp_layout() {
   if [[ -f "$HERMES_ROOT/skills/identyclaw/SKILL.md" ]]; then
     cp -a "$HERMES_ROOT/skills/identyclaw/SKILL.md" "$app/skills/identity/identyclaw/SKILL.md" 2>/dev/null || true
   fi
-  # Wrapper so `idcp` works inside the gateway and docker sandboxes.
-  if [[ -w "$app/bin" ]] || [[ -w "$app" ]]; then
-    cat >"$app/bin/idcp" <<'EOF'
+  # Wrappers so `idcp` / auth sidecar work inside the gateway and docker sandboxes.
+  # Prefer /opt/idcp (mounted in both); never hard-require a host packages path —
+  # sandboxes do not have /home/<user>/hermes-agents/packages/….
+  local _wrap
+  _wrap="$(mktemp -d)"
+  cat >"${_wrap}/idcp" <<'EOF'
 #!/bin/sh
 export IDENTYCLAW_HOME="${IDENTYCLAW_HOME:-${HERMES_HOME:-/opt/data}}"
 export HERMES_HOME="${HERMES_HOME:-/opt/data}"
@@ -373,8 +376,37 @@ done
 echo "idcp: /opt/idcp not mounted — recreate gateway (./hermes.sh start) or set docker_volumes" >&2
 exit 127
 EOF
-    chmod 755 "$app/bin/idcp" 2>/dev/null || true
+  cat >"${_wrap}/identyclaw-auth-sidecar" <<'EOF'
+#!/bin/sh
+export IDENTYCLAW_HOME="${IDENTYCLAW_HOME:-${HERMES_HOME:-/opt/data}}"
+export HERMES_HOME="${HERMES_HOME:-/opt/data}"
+for cand in \
+  "${IDENTYCLAW_SIDECAR:-}" \
+  /opt/idcp/bin/sidecar.mjs \
+  "$(dirname "$0")/../../hermes-agents/deploy/idcp/bin/sidecar.mjs"
+do
+  [ -n "$cand" ] && [ -f "$cand" ] && exec node "$cand" "$@"
+done
+echo "identyclaw-auth-sidecar: /opt/idcp not mounted — recreate gateway (./hermes.sh start) or set docker_volumes" >&2
+exit 127
+EOF
+  chmod 755 "${_wrap}/idcp" "${_wrap}/identyclaw-auth-sidecar"
+  if [[ -w "$app/bin" ]] || [[ -w "$app" ]]; then
+    mkdir -p "$app/bin"
+    cp -f "${_wrap}/idcp" "${_wrap}/identyclaw-auth-sidecar" "$app/bin/"
+  elif command -v podman >/dev/null 2>&1; then
+    podman unshare bash -c "
+      set -euo pipefail
+      app=$(printf '%q' "$app")
+      src=$(printf '%q' "$_wrap")
+      mkdir -p \"\$app/bin\"
+      cp -f \"\$src/idcp\" \"\$src/identyclaw-auth-sidecar\" \"\$app/bin/\"
+      owner=\$(stat -c '%u' \"\$app\" 2>/dev/null || echo 10000)
+      chmod 755 \"\$app/bin/idcp\" \"\$app/bin/identyclaw-auth-sidecar\"
+      chown \"\$owner:\$owner\" \"\$app/bin/idcp\" \"\$app/bin/identyclaw-auth-sidecar\" 2>/dev/null || true
+    "
   fi
+  rm -rf "$_wrap"
 }
 
 idcp_volume_args() {
@@ -450,11 +482,19 @@ import json, os, pathlib, re
 
 app = os.environ["HERMES_APP_HOST"]
 idcp = os.environ["HERMES_IDCP_HOST"]
+# secrets stays ro for himalaya/near; identyclaw JWT cache must be rw (idcp
+# ensure_session refreshes jwt-*.txt). Nested bind overlays the subdir.
+# IDENTYCLAW_HOME=/opt/data in docker_env so sandboxes do not chase a host path.
 wanted = [
     f"{idcp}:/opt/idcp:ro",
     f"{app}/secrets:/opt/data/secrets:ro",
+    f"{app}/secrets/identyclaw:/opt/data/secrets/identyclaw:rw",
     f"{app}/bin:/opt/data/bin:ro",
 ]
+wanted_env = {
+    "IDENTYCLAW_HOME": "/opt/data",
+    "HERMES_HOME": "/opt/data",
+}
 cfg_path = pathlib.Path(app) / "config.yaml"
 text = cfg_path.read_text()
 lines = text.splitlines(keepends=True)
@@ -501,6 +541,48 @@ elif not wrote_vols:
 
 cfg_path.write_text("".join(out))
 
+# Sandbox env: point idcp/sidecar at /opt/data (secrets + bin mounts), not a host path.
+text = cfg_path.read_text()
+lines = text.splitlines(keepends=True)
+out = []
+i = 0
+in_term = False
+wrote_env = False
+while i < len(lines):
+    line = lines[i]
+    if re.match(r"^terminal:\s*$", line):
+        in_term = True
+        out.append(line)
+        i += 1
+        continue
+    if in_term and re.match(r"^[^\s#]", line):
+        if not wrote_env:
+            out.append("  docker_env:\n")
+            for k, v in wanted_env.items():
+                out.append(f'    {k}: "{v}"\n')
+            wrote_env = True
+        in_term = False
+        out.append(line)
+        i += 1
+        continue
+    if in_term and re.match(r"^  docker_env:\s*$", line):
+        out.append("  docker_env:\n")
+        for k, v in wanted_env.items():
+            out.append(f'    {k}: "{v}"\n')
+        i += 1
+        while i < len(lines) and re.match(r"^    \w", lines[i]):
+            i += 1
+        wrote_env = True
+        continue
+    out.append(line)
+    i += 1
+if in_term and not wrote_env:
+    out.append("  docker_env:\n")
+    for k, v in wanted_env.items():
+        out.append(f'    {k}: "{v}"\n')
+
+cfg_path.write_text("".join(out))
+
 # Pin Migadu SMTP to IPv4 (IPv6 resets on this host).
 # Default is a current smtp.migadu.com A record — mta1 37.59.57.117 times out from this host.
 smtp_ip = os.environ.get("MIGADU_SMTP_IPV4", "141.94.97.118").strip() or "141.94.97.118"
@@ -543,12 +625,16 @@ if in_term and not wrote_extra:
 
 cfg_path.write_text("".join(out))
 
-# ExtraHosts are immutable for a container's lifetime. Always drop hermes
-# sandboxes whose smtp.migadu.com pin disagrees with MIGADU_SMTP_IPV4 so the
-# next terminal call recreates them (otherwise SMTP hangs on a dead IP while
-# IMAP still works — config.yaml can already be correct while sandboxes aren't).
+# ExtraHosts / volume mounts are immutable for a container's lifetime. Drop
+# hermes sandboxes whose smtp.migadu.com pin disagrees with MIGADU_SMTP_IPV4, or
+# that lack the writable identyclaw JWT mount / IDENTYCLAW_HOME=/opt/data, so the
+# next terminal call recreates them.
 import subprocess
 removed = []
+needles = (
+    f"{app}/secrets/identyclaw:/opt/data/secrets/identyclaw:rw",
+    "IDENTYCLAW_HOME=/opt/data",
+)
 try:
     ps = subprocess.run(
         ["docker", "ps", "-aq", "--filter", "label=hermes-agent=1"],
@@ -556,11 +642,15 @@ try:
     )
     for cid in [x for x in ps.stdout.split() if x]:
         insp = subprocess.run(
-            ["docker", "inspect", "-f", "{{json .HostConfig.ExtraHosts}}", cid],
+            ["docker", "inspect", "-f",
+             "{{json .HostConfig.ExtraHosts}}|{{json .HostConfig.Binds}}|{{json .Config.Env}}",
+             cid],
             capture_output=True, text=True, timeout=10, check=False,
         )
-        hosts = insp.stdout.strip()
-        if "smtp.migadu.com" in hosts and smtp_ip not in hosts:
+        blob = insp.stdout.strip()
+        stale_smtp = "smtp.migadu.com" in blob and smtp_ip not in blob
+        stale_idcp = any(n not in blob for n in needles)
+        if stale_smtp or stale_idcp:
             subprocess.run(
                 ["docker", "rm", "-f", cid],
                 capture_output=True, text=True, timeout=30, check=False,
@@ -570,6 +660,7 @@ except Exception as e:
     print(json.dumps({
         "ok": True,
         "docker_volumes": wanted,
+        "docker_env": wanted_env,
         "docker_extra_args": [add_host],
         "sandbox_recreate_error": str(e),
     }))
@@ -577,6 +668,7 @@ else:
     print(json.dumps({
         "ok": True,
         "docker_volumes": wanted,
+        "docker_env": wanted_env,
         "docker_extra_args": [add_host],
         "sandboxes_recreated_for_smtp_pin": removed,
     }))
