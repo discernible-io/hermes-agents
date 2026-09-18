@@ -126,6 +126,22 @@ http {
             proxy_pass http://hermes_a2a;
         }
 
+        # OpenClaw / Passport peers append /a2a to metadata.webhook_url.
+        # Strip the prefix so native A2A still sees / and /.well-known/.
+        location = /a2a {
+            limit_req zone=hermes_ingress burst=240 nodelay;
+            limit_req zone=hermes_public burst=120 nodelay;
+            include /etc/nginx/inc/hermes-proxy.inc;
+            proxy_pass http://hermes_a2a/;
+        }
+
+        location ^~ /a2a/ {
+            limit_req zone=hermes_ingress burst=240 nodelay;
+            limit_req zone=hermes_public burst=120 nodelay;
+            include /etc/nginx/inc/hermes-proxy.inc;
+            proxy_pass http://hermes_a2a/;
+        }
+
         location = /metrics {
             limit_req zone=hermes_ingress burst=120 nodelay;
             include /etc/nginx/inc/hermes-proxy.inc;

@@ -96,8 +96,9 @@ class PassportA2ASecurityContext:
                 if result.get("valid") and result.get("token_id"):
                     return str(result["token_id"])
             except Exception:
+                # Fall through to static peer/bearer tokens; a non-JWT
+                # Authorization header must not fail closed before that.
                 logger.warning("IdentyClaw A2A: JWT validation via sidecar failed", exc_info=True)
-                return None
 
         for token, name in self.peer_tokens:
             if hmac.compare_digest(presented, token):
