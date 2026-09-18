@@ -78,7 +78,7 @@ export function resetRoditClientsForTests() {
 
 /**
  * Build the audience rodit stub OpenClaw uses for inbound JWT validation.
- * aud = this agent's passport owner_id; issuer = public base / subject URL.
+ * aud = this agent's passport owner_id; issuer = subjectuniqueidentifier_url.
  */
 export function buildAudienceRodit({ audience, issuer }) {
   return {
@@ -90,17 +90,76 @@ export function buildAudienceRodit({ audience, issuer }) {
   };
 }
 
+/**
+ * Own passport via RoditClient.getConfigOwnRodit() — same path as OpenClaw
+ * `src/auth/rodit-own-config.ts`. Audience for inbound P2P JWTs is
+ * `own_rodit.owner_id` (NEAR account hex), never a hardcoded env string.
+ */
+export async function getRoditOwnConfig(credentialsPath = null) {
+  ensureRoditCredentialEnv(credentialsPath);
+  if (!process.env.NEAR_CREDENTIALS_FILE_PATH?.trim() && !process.env.IDENTYCLAW_ACCOUNT_ID) {
+    throw new Error(
+      "RODiT credentials not configured: set NEAR_CREDENTIALS_FILE_PATH (secrets/near-credentials/*.json)"
+    );
+  }
+  const client = await getClientClient(credentialsPath);
+  const config = await client.getConfigOwnRodit();
+  if (!config?.own_rodit || !config.own_rodit_bytes_private_key) {
+    throw new Error("RODiT own passport configuration is not initialized");
+  }
+  return config;
+}
+
+/** Public passport fields for Agent Card / Python security context. */
+export async function resolveOwnPassport(credentialsPath = null) {
+  const config = await getRoditOwnConfig(credentialsPath);
+  const own = config.own_rodit;
+  const metadata = own.metadata || {};
+  return {
+    ok: true,
+    token_id: String(own.token_id || "").trim() || null,
+    owner_id: String(own.owner_id || "").trim() || null,
+    issuer: String(metadata.subjectuniqueidentifier_url || "")
+      .trim()
+      .replace(/\/+$/, "") || null,
+    webhook_url: String(metadata.webhook_url || "").trim() || null,
+  };
+}
+
+/**
+ * Resolve inbound JWT aud/iss. Prefer RoditClient passport (authoritative);
+ * explicit args / IDENTYCLAW_JWT_* only when passport probe fails (tests / boot).
+ */
+export async function resolveInboundAudience({ audience, issuer, credentialsPath = null } = {}) {
+  let aud = "";
+  let iss = "";
+  try {
+    const passport = await resolveOwnPassport(credentialsPath);
+    aud = (passport.owner_id || "").trim();
+    iss = (passport.issuer || "").trim().replace(/\/+$/, "");
+  } catch {
+    /* fall through to args / env */
+  }
+  if (!aud) aud = (audience || process.env.IDENTYCLAW_JWT_AUDIENCE || "").trim();
+  if (!iss) {
+    iss = (
+      issuer ||
+      process.env.IDENTYCLAW_JWT_ISSUER ||
+      process.env.A2A_PUBLIC_URL ||
+      ""
+    )
+      .trim()
+      .replace(/\/+$/, "");
+  }
+  return { audience: aud, issuer: iss };
+}
+
 export async function validateInboundJwt(token, { audience, issuer, logLevel } = {}) {
   if (!token) return { valid: false, reason: "missing_token" };
-  const aud = (audience || process.env.IDENTYCLAW_JWT_AUDIENCE || "").trim();
-  const iss = (
-    issuer ||
-    process.env.IDENTYCLAW_JWT_ISSUER ||
-    process.env.A2A_PUBLIC_URL ||
-    ""
-  )
-    .trim()
-    .replace(/\/+$/, "");
+  const { audience: aud, issuer: iss } = await resolveInboundAudience({
+    audience,
+    issuer,
+  });
   if (!aud) {
     return { valid: false, reason: "missing_audience" };
   }

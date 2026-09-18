@@ -821,8 +821,9 @@ PY
   fi
   echo ""
   echo "Next:"
-  echo "  1. Set IDENTYCLAW_JWT_AUDIENCE=<passport owner_id> in env.local / .env"
-  echo "  2. Set A2A_PUBLIC_URL to your public HTTPS base (same host:port as Telegram ingress)"
+  echo "  1. Ensure NEAR_CREDENTIALS_FILE_PATH → secrets/near-credentials/*.json"
+  echo "     (JWT aud = RoditClient.getConfigOwnRodit().own_rodit.owner_id — do not hardcode)"
+  echo "  2. Set A2A_PUBLIC_URL to your public HTTPS base (Agent Card / discovery)"
   echo "  3. ./hermes.sh start   # recreates gateway + in-pod auth sidecar + nginx /hooks + /api/login"
   echo "  4. ./hermes.sh build-nginx && restart if nginx routes are stale"
   echo "  (Optional host-only debug: ./hermes.sh identyclaw-auth-start — not used by the gateway)"

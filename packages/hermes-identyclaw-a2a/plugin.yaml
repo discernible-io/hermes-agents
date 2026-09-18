@@ -20,12 +20,8 @@ optional_env:
     description: "Localhost auth sidecar port (default 9910)."
     prompt: "IdentyClaw auth sidecar port"
     password: false
-  - name: IDENTYCLAW_JWT_AUDIENCE
-    description: "This agent's Passport owner_id (JWT aud for inbound peers)."
-    prompt: "Passport owner_id (JWT audience)"
-    password: false
   - name: A2A_PUBLIC_URL
-    description: "Public HTTPS base URL (Agent Card + JWT issuer hint)."
+    description: "Public HTTPS base URL (Agent Card / discovery). JWT aud comes from RoditClient."
     prompt: "Public A2A / webhook base URL"
     password: false
   - name: A2A_PORT
@@ -33,6 +29,10 @@ optional_env:
     prompt: "A2A port"
     password: false
   - name: A2A_HOST
-    description: "Bind host (Passport JWT auth allows remote bind when audience is set)."
+    description: "Bind host (Passport JWT auth allows remote bind when passport loads)."
     prompt: "A2A bind host"
+    password: false
+  - name: IDENTYCLAW_JWT_AUDIENCE
+    description: "Optional override only — prefer RoditClient.getConfigOwnRodit().own_rodit.owner_id."
+    prompt: "(optional) JWT audience override"
     password: false

@@ -21,6 +21,39 @@ def _startup_env(name: str) -> str:
     return os.getenv(name, "").strip()
 
 
+def _resolve_passport_identity() -> tuple[str, str]:
+    """Audience/issuer from RoditClient via sidecar (OpenClaw getConfigOwnRodit).
+
+    IDENTYCLAW_JWT_AUDIENCE / IDENTYCLAW_JWT_ISSUER are legacy overrides only
+    when the sidecar cannot load the local passport.
+    """
+    audience = ""
+    issuer = ""
+    try:
+        from . import sidecar_client
+
+        passport = sidecar_client.own_passport()
+        if passport.get("owner_id"):
+            audience = str(passport["owner_id"]).strip()
+        if passport.get("issuer"):
+            issuer = str(passport["issuer"]).strip().rstrip("/")
+    except Exception:
+        logger.warning(
+            "IdentyClaw A2A: could not load own passport from auth sidecar; "
+            "falling back to IDENTYCLAW_JWT_* env if set",
+            exc_info=True,
+        )
+
+    if not audience:
+        audience = _startup_env("IDENTYCLAW_JWT_AUDIENCE")
+    if not issuer:
+        issuer = (
+            _startup_env("IDENTYCLAW_JWT_ISSUER")
+            or _startup_env("A2A_PUBLIC_URL")
+        ).rstrip("/")
+    return audience, issuer
+
+
 @dataclass(frozen=True)
 class PassportA2ASecurityContext:
     """Passport JWT auth; falls back to static tokens when JWT audience unset."""
@@ -39,11 +72,10 @@ class PassportA2ASecurityContext:
         from plugins.platforms.a2a.security import A2ASecurityContext
 
         base = A2ASecurityContext.capture()
+        audience, issuer = _resolve_passport_identity()
         return cls(
-            jwt_audience=_startup_env("IDENTYCLAW_JWT_AUDIENCE"),
-            jwt_issuer=(_startup_env("IDENTYCLAW_JWT_ISSUER") or _startup_env("A2A_PUBLIC_URL")).rstrip(
-                "/"
-            ),
+            jwt_audience=audience,
+            jwt_issuer=issuer,
             bearer_token=base.bearer_token,
             peer_tokens=base.peer_tokens,
             trusted_peers=base.trusted_peers,
@@ -65,8 +97,9 @@ class PassportA2ASecurityContext:
             return self.requested_host
         if self.localhost_only():
             logger.warning(
-                "IdentyClaw A2A: A2A_HOST=%s ignored — set IDENTYCLAW_JWT_AUDIENCE "
-                "(Passport) or A2A_PEER_TOKENS / A2A_BEARER_TOKEN; binding 127.0.0.1.",
+                "IdentyClaw A2A: A2A_HOST=%s ignored — Passport owner_id unavailable "
+                "(start auth sidecar with NEAR_CREDENTIALS_FILE_PATH) or set "
+                "A2A_PEER_TOKENS / A2A_BEARER_TOKEN; binding 127.0.0.1.",
                 self.requested_host,
             )
             return "127.0.0.1"
@@ -86,11 +119,9 @@ class PassportA2ASecurityContext:
             try:
                 from . import sidecar_client
 
-                result = sidecar_client.validate_jwt(
-                    presented,
-                    audience=self.jwt_audience,
-                    issuer=self.jwt_issuer or None,
-                )
+                # Sidecar resolves aud from RoditClient.getConfigOwnRodit(); do not
+                # re-pass a stale IDENTYCLAW_JWT_AUDIENCE override.
+                result = sidecar_client.validate_jwt(presented)
                 if result.get("valid") and result.get("identity"):
                     return str(result["identity"])
                 if result.get("valid") and result.get("token_id"):

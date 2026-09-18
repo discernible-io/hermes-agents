@@ -109,14 +109,14 @@ plugins:
 
 | Variable | Purpose |
 |----------|---------|
-| `IDENTYCLAW_JWT_AUDIENCE` | Passport audience / `owner_id` |
-| `A2A_PUBLIC_URL` | Public HTTPS base for A2A |
+| `NEAR_CREDENTIALS_FILE_PATH` | Absolute path to NEAR key JSON (JWT `aud` = passport `owner_id`) |
+| `A2A_PUBLIC_URL` | Public HTTPS base for A2A Agent Card |
 | `IDENTYCLAW_AUTH_PORT` | Sidecar (default `9910`) |
-| `NEAR_CREDENTIALS_FILE_PATH` | Absolute path to NEAR key JSON |
 | `IDENTYCLAW_HOOKS_PORT` | `/hooks/*` (default `9911`) |
+| `IDENTYCLAW_JWT_AUDIENCE` | Optional fallback only — prefer RoditClient |
 
 ```bash
-NEAR_CREDENTIALS_FILE_PATH=… IDENTYCLAW_JWT_AUDIENCE=… \
+NEAR_CREDENTIALS_FILE_PATH=… \
   node "$REPO/packages/hermes-identyclaw-auth/bin/sidecar.mjs" --port 9910
 ```
 

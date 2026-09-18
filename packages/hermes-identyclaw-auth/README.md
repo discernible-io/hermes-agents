@@ -22,16 +22,20 @@ Sidecar (for platform plugins):
 
 ```bash
 NEAR_CREDENTIALS_FILE_PATH=/path/to/near.json \
-IDENTYCLAW_JWT_AUDIENCE=<passport owner_id> \
 node bin/sidecar.mjs --port 9910
 ```
+
+Inbound JWT `aud` is resolved from `RoditClient.getConfigOwnRodit().own_rodit.owner_id`
+(same as OpenClaw). `IDENTYCLAW_JWT_AUDIENCE` is an optional fallback only when the
+passport cannot be loaded.
 
 ## Sidecar routes
 
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/health` | liveness |
-| POST | `/v1/validate_jwt` | Passport JWT → `token_id` |
+| GET | `/v1/own_passport` | `owner_id` / `token_id` / issuer from RoditClient |
+| POST | `/v1/validate_jwt` | Passport JWT → `token_id` (aud from own passport) |
 | POST | `/v1/login_server` | outbound peer login |
 | POST | `/v1/authenticate_webhook` | Ed25519 webhook verify |
 | GET/POST | `/api/login/timestamp`, `/api/login` | peer inbound login |

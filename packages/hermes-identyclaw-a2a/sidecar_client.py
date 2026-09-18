@@ -53,12 +53,18 @@ def health() -> bool:
         return False
 
 
+def own_passport() -> dict[str, Any]:
+    """Passport fields from RoditClient.getConfigOwnRodit() via the sidecar."""
+    return _get("/v1/own_passport", timeout=30.0)
+
+
 def validate_jwt(
     token: str,
     *,
     audience: Optional[str] = None,
     issuer: Optional[str] = None,
 ) -> dict[str, Any]:
+    """Validate a peer JWT. Audience/issuer default to own passport on the sidecar."""
     body: dict[str, Any] = {"token": token}
     if audience:
         body["audience"] = audience

@@ -44,8 +44,7 @@ def interactive_setup() -> None:
     print_info("Overlays bundled A2A with Passport JWT auth via the auth sidecar.")
     for env, label in (
         ("IDENTYCLAW_AUTH_PORT", "Auth sidecar port (default 9910)"),
-        ("IDENTYCLAW_JWT_AUDIENCE", "Passport owner_id (JWT aud)"),
-        ("A2A_PUBLIC_URL", "Public HTTPS base URL"),
+        ("A2A_PUBLIC_URL", "Public HTTPS base URL (Agent Card)"),
         ("A2A_PORT", "A2A listen port (default 9900)"),
         ("A2A_HOST", "Bind host (e.g. 0.0.0.0 behind nginx)"),
     ):
@@ -53,6 +52,10 @@ def interactive_setup() -> None:
         value = prompt(label, default=cur)
         if value:
             save_env_value(env, value.strip())
+    print_info(
+        "JWT audience is loaded from RoditClient.getConfigOwnRodit() "
+        "(NEAR credentials) — do not set IDENTYCLAW_JWT_AUDIENCE."
+    )
 
 
 def register(ctx) -> None:

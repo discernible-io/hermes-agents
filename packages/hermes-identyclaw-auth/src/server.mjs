@@ -4,7 +4,9 @@
  * Routes:
  *   GET  /health
  *   GET  /v1/sessions
+ *   GET  /v1/own_passport     → { ok, owner_id, token_id, issuer, webhook_url }
  *   POST /v1/validate_jwt     { token } → { valid, identity/token_id, … }
+ *                               (aud/iss from RoditClient.getConfigOwnRodit)
  *   POST /v1/login_server     { apiEndpoint? } → { ok, jwt_token, jwt_length, token_id }
  *   POST /v1/authenticate_webhook
  *        { payload, signature, timestamp, publicKey } → { isValid, … }
@@ -17,6 +19,7 @@ import {
   getClientClient,
   getAuthServices,
   validateInboundJwt,
+  resolveOwnPassport,
   loginServerToPeer,
   wrapExpressLikeResponse,
   extractWebhookSignerKey,
@@ -99,6 +102,18 @@ export function createAuthServer({ host = DEFAULT_HOST, port = DEFAULT_PORT } = 
 
       if (method === "GET" && path === "/v1/sessions") {
         return sendJson(res, 200, listSessions());
+      }
+
+      if (method === "GET" && path === "/v1/own_passport") {
+        try {
+          const passport = await resolveOwnPassport();
+          return sendJson(res, 200, passport);
+        } catch (err) {
+          return sendJson(res, 503, {
+            ok: false,
+            error: err?.message || String(err),
+          });
+        }
       }
 
       if (method === "POST" && path === "/v1/ensure_session") {
