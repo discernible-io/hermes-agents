@@ -192,11 +192,33 @@ export async function validateInboundJwt(token, { audience, issuer, logLevel } =
   return { valid: false, reason: "invalid_token" };
 }
 
+/**
+ * P2P outbound login — OpenClaw `rodit-peer-login.ts` Phase 9A pattern:
+ * call exported `login_server(config, opts)` with subjectuniqueidentifier_url
+ * overridden to the peer gateway base so federated issuer checks align.
+ */
 export async function loginServerToPeer({ apiEndpoint, credentialsPath = null } = {}) {
-  const client = await getClientClient(credentialsPath);
-  const opts = apiEndpoint ? { apiEndpoint } : {};
-  const result = await client.login_server(opts);
-  if (!result?.jwt_token || result.success === false) {
+  ensureRoditCredentialEnv(credentialsPath);
+  const base = (apiEndpoint || "").trim().replace(/\/+$/, "");
+  if (!base) {
+    throw new Error("apiEndpoint required for peer login_server");
+  }
+  const ownConfig = await getRoditOwnConfig(credentialsPath);
+  const { login_server } = loadRoditAuthBe();
+  const config = {
+    ...ownConfig,
+    own_rodit: {
+      ...ownConfig.own_rodit,
+      metadata: {
+        ...ownConfig.own_rodit.metadata,
+        subjectuniqueidentifier_url: base,
+      },
+    },
+  };
+  const result = await login_server(config, {
+    apiEndpoint: base,
+  });
+  if (!result?.jwt_token || result.error) {
     throw new Error(result?.error || "login_server returned no jwt_token");
   }
   return {
@@ -204,8 +226,6 @@ export async function loginServerToPeer({ apiEndpoint, credentialsPath = null } 
     jwt_token: result.jwt_token,
     jwt_length: result.jwt_token.length,
     token_id: result.token_id || result.roditid || null,
-    // never return jwt to model-facing surfaces from Python without care —
-    // sidecar callers (platform plugins) need the token for Authorization.
   };
 }
 
