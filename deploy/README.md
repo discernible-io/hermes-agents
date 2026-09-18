@@ -74,6 +74,7 @@ AlmaLinux / RHEL: `podman-restart.service` only restarts containers with policy 
 | `./hermes.sh exec -- …` | Run a command in the live container (or one-shot) |
 | `./hermes.sh idcp-setup` | Passport only: auto enroll → purchase guide → session |
 | `./hermes.sh idcp-install` | Install IdentyClaw `idcp` helper + skill into app dir |
+| `./hermes.sh identyclaw-peer-install` | Overlay Passport JWT A2A (`a2a-platform`) + auth sidecar |
 | `./hermes.sh idcp …` | Passport ops (`enroll`, `ensure_session`, `create_hola`, …) |
 | `./hermes.sh himalaya-install` | Install Himalaya CLI + Migadu config into app dir |
 | `./hermes.sh himalaya-password` | Store Migadu IMAP/SMTP password |
@@ -94,15 +95,29 @@ This wrapper can expose it behind an **nginx TLS sidecar** in a dedicated Podman
 
 Auth is Hermes **HMAC** via `WEBHOOK_SECRET` in `.env` (not IdentyClaw RODiT; not `config.yaml`). nginx only terminates TLS and proxies `/webhooks/`.
 
-Pod nginx also reverse-proxies Hermes **native A2A** (bundled `a2a-platform` plugin — not OpenClaw `identyclaw-a2a`):
+Pod nginx reverse-proxies **Passport JWT A2A** when the identyclaw overlay is
+installed (`./hermes.sh identyclaw-peer-install`). That copies
+`packages/hermes-identyclaw-a2a` to `$HERMES_HOME/plugins/a2a-platform/`
+(last-writer-wins over bundled A2A) and starts an in-pod auth sidecar on
+`127.0.0.1:9910`. Bundled native A2A + static `A2A_BEARER_TOKEN` is the
+fallback only when the overlay is **not** installed.
 
 | Path | Upstream |
 |------|----------|
-| `GET/POST /a2a` | A2A JSON-RPC (Passport peers conventionally POST here) |
-| `GET /.well-known/agent-card.json` | Agent Card |
+| `/a2a` and `/a2a/` | A2A JSON-RPC (strip `/a2a`) |
+| `/.well-known/` | A2A Agent Card |
+| `/api/login` and `/api/login/timestamp` | A2A → Passport sidecar |
 | `POST /` | A2A JSON-RPC |
 
-Enable with `platforms.a2a.enabled: true` and outbound peers under `a2a_agents:` in `config.yaml`. Put `A2A_BEARER_TOKEN` (required for remote POST) plus `A2A_PUBLIC_URL` in `.env` / `env.local`. `./hermes.sh start` seeds the platform block. OpenClaw peers that authenticate with Passport JWTs will 401 — they need this bearer token, or to stay on OpenClaw.
+Inbound identity is Passport `token_id` via sidecar `validate_jwt`. Outbound
+peers under `a2a_agents:` use sidecar `login_server` against the peer base URL
+— do **not** put `auth: { type: bearer, token: ... }` on those entries. Set
+`IDENTYCLAW_JWT_AUDIENCE` (Passport `owner_id`) and `A2A_PUBLIC_URL` (Passport
+webhook origin, e.g. `https://identyclaw-concierge.identyclaw.com:7443`).
+`./hermes.sh start` seeds `platforms.a2a` and enables the overlay.
+
+Until a peer's mint-time `:7443` is reachable, point at the port that answers
+(e.g. `https://hermes.dihola.io:10443/a2a`).
 
 If the Passport `webhook_url` uses a different port than `HERMES_INGRESS_PORT` (common: mint-time `:7443`, Telegram on `:10443` because OpenClaw owns `8443`), set `HERMES_EXTRA_INGRESS_PORTS=7443` in `env.local` so the pod also publishes that host port onto nginx.
 

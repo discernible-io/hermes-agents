@@ -18,6 +18,7 @@
 #   ./hermes.sh own host       # reclaim app dir after stop
 #   ./hermes.sh idcp-setup     # Resume Passport: auto enroll → purchase → session
 #   ./hermes.sh idcp-install   # IdentyClaw helper + skill into app dir
+#   ./hermes.sh identyclaw-peer-install  # Passport JWT A2A overlay + auth sidecar
 #   ./hermes.sh idcp <cmd…>    # ensure_session | create_hola | …
 #   ./hermes.sh himalaya-install
 #   ./hermes.sh himalaya-password
@@ -33,7 +34,7 @@ HERMES_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERMES_ROOT/scripts/lib.sh"
 
 usage() {
-  sed -n '2,26p' "$0" | sed 's/^# \?//'
+  sed -n '2,28p' "$0" | sed 's/^# \?//'
 }
 
 # Shared hermes gateway run args (caller adds --pod or host -p ports).
@@ -152,6 +153,10 @@ cmd_start_pod() {
     --name "$HERMES_POD" \
     "${pod_ports[@]}"
 
+  if identyclaw_a2a_overlay_installed; then
+    start_identyclaw_a2a_sidecar || echo "Warning: Passport A2A sidecar failed to start" >&2
+  fi
+
   hermes_gateway_run_args args
   args+=(--pod "$HERMES_POD")
   if [[ -n "${HERMES_DASHBOARD_PORT:-}" ]]; then
@@ -180,6 +185,8 @@ cmd_start_pod() {
   echo "  Webhooks: https://${HERMES_PUBLIC_HOST}:${HERMES_INGRESS_PORT}/webhooks/<route>"
   echo "  Telegram: https://${HERMES_PUBLIC_HOST}:${HERMES_INGRESS_PORT}/telegram"
   echo "  A2A:      https://${HERMES_PUBLIC_HOST}:${HERMES_INGRESS_PORT}/a2a"
+  echo "  Login:    https://${HERMES_PUBLIC_HOST}:${HERMES_INGRESS_PORT}/api/login/timestamp"
+  echo "  Auth:     Passport JWT sidecar 127.0.0.1:${A2A_AUTH_SIDECAR_PORT:-9910} (after identyclaw-peer-install)"
   if [[ -n "${HERMES_EXTRA_INGRESS_PORTS:-}" ]]; then
     echo "  Extra:    host ports ${HERMES_EXTRA_INGRESS_PORTS} → nginx ${HERMES_INGRESS_PORT}"
   fi
@@ -209,7 +216,13 @@ cmd_start() {
     ensure_tls_certs
     ensure_hermes_nginx_conf
     ensure_webhook_config_seed || true
-    ensure_a2a_config_seed || true
+    if identyclaw_a2a_overlay_installed; then
+      ensure_passport_a2a_env || true
+      ensure_passport_a2a_config_seed || true
+      sync_gateway_env_file || true
+    else
+      ensure_a2a_config_seed || true
+    fi
     normalize_tls_certs
   fi
 
@@ -809,6 +822,50 @@ cmd_himalaya_test() {
   himalaya_test
 }
 
+cmd_identyclaw_peer_install() {
+  local app envf audience pub
+  require_podman
+  ensure_app_layout
+  load_env
+  app="$(hermes_app_dir)"
+  envf="$(hermes_env_file)"
+
+  if container_is_running "${HERMES_CONTAINER:-hermes}" \
+    || container_is_running "${HERMES_NGINX_CONTAINER:-hermes-nginx}"; then
+    echo "Stopping gateway so the app dir is host-writable ..."
+    cmd_stop || true
+  fi
+  restore_app_ownership 2>/dev/null || true
+
+  install_identyclaw_a2a_overlay
+
+  audience="${IDENTYCLAW_JWT_AUDIENCE:-}"
+  if [[ -z "$audience" ]]; then
+    audience="$(probe_identyclaw_jwt_audience || true)"
+  fi
+  if [[ -n "$audience" ]]; then
+    export IDENTYCLAW_JWT_AUDIENCE="$audience"
+    echo "IDENTYCLAW_JWT_AUDIENCE=$(printf '%s' "$audience" | cut -c1-16)…"
+  else
+    echo "Warning: could not probe Passport owner_id — set IDENTYCLAW_JWT_AUDIENCE in env.local" >&2
+  fi
+
+  pub="${A2A_PUBLIC_URL:-$(identyclaw_a2a_public_url)}"
+  [[ -n "$pub" ]] && export A2A_PUBLIC_URL="$pub"
+  ensure_passport_a2a_env
+  ensure_passport_a2a_config_seed || true
+  sync_gateway_env_file || true
+
+  echo ""
+  echo "Passport JWT A2A overlay installed."
+  echo "  Plugin:   ${app}/plugins/a2a-platform/  (name: a2a-platform, last-writer-wins)"
+  echo "  Sidecar:  ${app}/a2a-auth-sidecar/ → 127.0.0.1:${A2A_AUTH_SIDECAR_PORT:-9910} on start"
+  echo "  Public:   ${A2A_PUBLIC_URL:-unset}"
+  echo "  Peer:     a2a_agents.bdshbmlhsdbh without static bearer"
+  echo "  Do not set A2A_BEARER_TOKEN for this peer — inbound is passport-jwt."
+  echo "Next: ./hermes.sh start"
+}
+
 main() {
   local cmd="${1:-}"
   shift || true
@@ -830,6 +887,7 @@ main() {
     himalaya-install) cmd_himalaya_install "$@" ;;
     himalaya-password) cmd_himalaya_password "$@" ;;
     himalaya-test) cmd_himalaya_test "$@" ;;
+    identyclaw-peer-install) cmd_identyclaw_peer_install "$@" ;;
     generate-certs) cmd_generate_certs "$@" ;;
     build-nginx) cmd_build_nginx "$@" ;;
     -h|--help|help|"") usage ;;

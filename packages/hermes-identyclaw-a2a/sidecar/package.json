@@ -1,0 +1,17 @@
+{
+  "name": "hermes-identyclaw-a2a-sidecar",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Passport JWT auth sidecar for Hermes identyclaw-a2a (validate_jwt + login_server + P2P /api/login)",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "@rodit/rodit-auth-be": "9.14.0",
+    "express": ">=4.21.2,<5"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

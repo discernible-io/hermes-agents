@@ -132,6 +132,21 @@ http {
             proxy_pass http://hermes_a2a/;
         }
 
+        # Passport P2P login (A2A overlay forwards these to the auth sidecar).
+        location = /api/login {
+            limit_req zone=hermes_ingress burst=240 nodelay;
+            limit_req zone=hermes_public burst=120 nodelay;
+            include /etc/nginx/inc/hermes-proxy.inc;
+            proxy_pass http://hermes_a2a;
+        }
+
+        location = /api/login/timestamp {
+            limit_req zone=hermes_ingress burst=240 nodelay;
+            limit_req zone=hermes_public burst=120 nodelay;
+            include /etc/nginx/inc/hermes-proxy.inc;
+            proxy_pass http://hermes_a2a;
+        }
+
         location / {
             return 404;
         }

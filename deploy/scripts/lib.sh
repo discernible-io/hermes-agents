@@ -42,6 +42,8 @@ _GATEWAY_ENV_KEYS=(
   TELEGRAM_WEBHOOK_HOST GATEWAY_ALLOW_ALL_USERS
   A2A_PORT A2A_HOST A2A_PUBLIC_URL A2A_AGENT_NAME A2A_BEARER_TOKEN
   A2A_PEER_TOKENS A2A_ALLOW_ALL_USERS
+  A2A_AUTH_SIDECAR_URL A2A_AUTH_SIDECAR_PORT IDENTYCLAW_JWT_AUDIENCE
+  IDENTYCLAW_JWT_ISSUER IDENTYCLAW_A2A_AUTH
 )
 
 # Upsert shell-sourced values into .env when the key is missing or empty there.
@@ -1319,19 +1321,266 @@ print("Seeded A2A: " + ", ".join(changed))
 PY
 }
 
+# Overlay last-writer-wins a2a-platform: Passport JWT, no static bearer on peers.
+ensure_passport_a2a_config_seed() {
+  local app cfg peer_url
+  app="$(hermes_app_dir)"
+  cfg="${app}/config.yaml"
+  [[ -f "$cfg" ]] || return 0
+  load_env
+  command -v python3 >/dev/null 2>&1 || return 0
+  peer_url="${IDENTYCLAW_A2A_PEER_BDSHBMLHSDBH_URL:-https://hermes.dihola.io:10443/a2a}"
+  python3 - "$cfg" "${A2A_PORT:-9900}" "$peer_url" <<'PY'
+import sys
+from pathlib import Path
+
+try:
+    import yaml
+except ImportError:
+    print("python3-yaml missing — skip Passport A2A config seed", file=sys.stderr)
+    raise SystemExit(0)
+
+cfg_path = Path(sys.argv[1])
+port = int(sys.argv[2])
+peer_url = sys.argv[3]
+data = yaml.safe_load(cfg_path.read_text()) or {}
+changed = []
+
+platforms = data.setdefault("platforms", {})
+if not isinstance(platforms, dict):
+    platforms = {}
+    data["platforms"] = platforms
+a2a = platforms.get("a2a")
+if not isinstance(a2a, dict):
+    a2a = {}
+    platforms["a2a"] = a2a
+if not a2a.get("enabled"):
+    a2a["enabled"] = True
+    changed.append("platforms.a2a.enabled")
+extra = a2a.get("extra")
+if not isinstance(extra, dict):
+    extra = {}
+    a2a["extra"] = extra
+if extra.get("port") in (None, ""):
+    extra["port"] = port
+    changed.append("platforms.a2a.extra.port")
+
+pts = data.setdefault("platform_toolsets", {})
+if not isinstance(pts, dict):
+    pts = {}
+    data["platform_toolsets"] = pts
+for plat in ("cli", "telegram", "a2a"):
+    cur = pts.get(plat)
+    if not isinstance(cur, list):
+        cur = []
+        pts[plat] = cur
+    if "a2a" not in cur:
+        cur.append("a2a")
+        changed.append(f"platform_toolsets.{plat}")
+
+plugins = data.setdefault("plugins", {})
+if not isinstance(plugins, dict):
+    plugins = {}
+    data["plugins"] = plugins
+enabled = plugins.get("enabled")
+if not isinstance(enabled, list):
+    enabled = []
+    plugins["enabled"] = enabled
+if "a2a-platform" not in enabled:
+    enabled.append("a2a-platform")
+    changed.append("plugins.enabled")
+disabled = plugins.get("disabled")
+if isinstance(disabled, list) and "a2a-platform" in disabled:
+    plugins["disabled"] = [x for x in disabled if x != "a2a-platform"]
+    changed.append("plugins.disabled")
+entries = plugins.setdefault("entries", {})
+if not isinstance(entries, dict):
+    entries = {}
+    plugins["entries"] = entries
+entry = entries.get("a2a-platform")
+if not isinstance(entry, dict):
+    entry = {}
+    entries["a2a-platform"] = entry
+if not entry.get("allow_tool_override"):
+    entry["allow_tool_override"] = True
+    changed.append("plugins.entries.a2a-platform.allow_tool_override")
+
+agents = data.get("a2a_agents")
+if not isinstance(agents, dict):
+    agents = {}
+    data["a2a_agents"] = agents
+peer = agents.get("bdshbmlhsdbh")
+if not isinstance(peer, dict):
+    peer = {}
+    agents["bdshbmlhsdbh"] = peer
+    changed.append("a2a_agents.bdshbmlhsdbh")
+url = str(peer.get("url") or "").strip()
+stale = (not url) or url.rstrip("/").endswith(":7443") or url.rstrip("/").endswith(":7443/a2a")
+if stale and peer_url:
+    peer["url"] = peer_url
+    changed.append("a2a_agents.bdshbmlhsdbh.url")
+if peer.get("timeout") in (None, ""):
+    peer["timeout"] = 120
+    changed.append("a2a_agents.bdshbmlhsdbh.timeout")
+auth = peer.get("auth")
+if isinstance(auth, dict) and (auth.get("token") or str(auth.get("type") or "").lower() == "bearer"):
+    peer.pop("auth", None)
+    changed.append("a2a_agents.bdshbmlhsdbh.auth")
+
+if not changed:
+    print("config.yaml already has Passport A2A overlay + a2a toolset")
+    raise SystemExit(0)
+
+cfg_path.write_text(yaml.safe_dump(data, sort_keys=False, default_flow_style=False, allow_unicode=True))
+print("Seeded Passport A2A: " + ", ".join(changed))
+PY
+}
+
+install_identyclaw_a2a_overlay() {
+  local app src dest sidecar
+  app="$(hermes_app_dir)"
+  src="$(identyclaw_a2a_overlay_src)"
+  dest="${app}/plugins/a2a-platform"
+  sidecar="${app}/a2a-auth-sidecar"
+  [[ -f "${src}/plugin.yaml" ]] || {
+    echo "missing overlay at ${src}" >&2
+    return 1
+  }
+  mkdir -p "${app}/plugins"
+  rm -rf "$dest"
+  mkdir -p "$dest"
+  cp -a "${src}/plugin.yaml" "${src}/__init__.py" "${src}/adapter.py" "${src}/security.py" "${src}/tools.py" "${src}/README.md" "$dest/"
+  mkdir -p "$sidecar"
+  cp -a "${src}/sidecar/server.mjs" "${src}/sidecar/package.json" "${src}/sidecar/probe-audience.mjs" "$sidecar/"
+  if ! command -v npm >/dev/null 2>&1; then
+    echo "npm required on host for identyclaw-peer-install (auth sidecar)" >&2
+    return 1
+  fi
+  echo "Installing auth sidecar deps in ${sidecar} ..."
+  (cd "$sidecar" && npm install --omit=dev)
+  echo "Overlay → ${dest}"
+  echo "Sidecar → ${sidecar}"
+}
+
+start_identyclaw_a2a_sidecar() {
+  local app z cred sidecar name image near_dir
+  app="$(hermes_app_dir)"
+  sidecar="${app}/a2a-auth-sidecar"
+  [[ -f "${sidecar}/server.mjs" && -d "${sidecar}/node_modules" ]] || {
+    echo "Passport A2A sidecar not installed — run: ./hermes.sh identyclaw-peer-install" >&2
+    return 1
+  }
+  load_env
+  z="$(selinux_mount_suffix)"
+  name="${HERMES_A2A_AUTH_CONTAINER:-hermes-a2a-auth}"
+  image="${HERMES_A2A_AUTH_IMAGE:-docker.io/library/node:22-bookworm-slim}"
+  if ! podman image exists "$image" 2>/dev/null; then
+    echo "Pulling ${image} ..."
+    podman pull "$image"
+  fi
+  near_dir="${app}/secrets/near-credentials"
+  cred="$(find "$near_dir" -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1 || true)"
+  [[ -n "$cred" ]] || {
+    echo "No NEAR credentials under ${near_dir}" >&2
+    return 1
+  }
+  podman rm -f "$name" 2>/dev/null || true
+  echo "Starting Passport auth sidecar ${name} on 127.0.0.1:${A2A_AUTH_SIDECAR_PORT:-9910} ..."
+  podman run -d \
+    --pod "${HERMES_POD:-hermes-agent-pod}" \
+    --name "$name" \
+    --replace \
+    --restart always \
+    -v "${sidecar}:/opt/sidecar:ro${z}" \
+    -v "${app}/secrets:/opt/data/secrets:ro${z}" \
+    -e "A2A_AUTH_SIDECAR_HOST=127.0.0.1" \
+    -e "A2A_AUTH_SIDECAR_PORT=${A2A_AUTH_SIDECAR_PORT:-9910}" \
+    -e "NEAR_CREDENTIALS_FILE_PATH=/opt/data/secrets/near-credentials/$(basename "$cred")" \
+    -e "IDENTYCLAW_JWT_AUDIENCE=${IDENTYCLAW_JWT_AUDIENCE:-}" \
+    -e "IDENTYCLAW_JWT_ISSUER=${IDENTYCLAW_JWT_ISSUER:-https://api.identyclaw.com}" \
+    -e "IDENTYCLAW_NEAR_CONTRACT_ID=${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}" \
+    -e "NEAR_CONTRACT_ID=${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}" \
+    -e "LOG_LEVEL=error" \
+    -e "SUPPRESS_NO_CONFIG_WARNING=true" \
+    -e "SUPPRESS_STRICTNESS_CHECK=true" \
+    -e "SECURITY_OPTIONS_LOGIN_MODE=${SECURITY_OPTIONS_LOGIN_MODE:-promiscuous}" \
+    "$image" \
+    node /opt/sidecar/server.mjs
+}
+
 stop_hermes_pod_stack() {
-  local name nginx_name pod_name
+  local name nginx_name pod_name auth_name
   load_env
   name="${HERMES_CONTAINER:-hermes}"
   nginx_name="${HERMES_NGINX_CONTAINER:-hermes-nginx}"
+  auth_name="${HERMES_A2A_AUTH_CONTAINER:-hermes-a2a-auth}"
   pod_name="${HERMES_POD:-hermes-agent-pod}"
   podman stop "$name" 2>/dev/null || true
   podman rm -f "$name" 2>/dev/null || true
   podman stop "$nginx_name" 2>/dev/null || true
   podman rm -f "$nginx_name" 2>/dev/null || true
+  podman stop "$auth_name" 2>/dev/null || true
+  podman rm -f "$auth_name" 2>/dev/null || true
   if podman pod exists "$pod_name" 2>/dev/null; then
     podman pod rm -f "$pod_name" 2>/dev/null || true
   fi
+}
+
+identyclaw_a2a_overlay_src() {
+  printf '%s' "$(cd "${HERMES_ROOT}/.." && pwd)/packages/hermes-identyclaw-a2a"
+}
+
+identyclaw_a2a_overlay_installed() {
+  local app
+  app="$(hermes_app_dir)"
+  [[ -f "${app}/plugins/a2a-platform/plugin.yaml" ]]
+}
+
+identyclaw_a2a_public_url() {
+  local host port extra
+  load_env
+  host="${HERMES_PUBLIC_HOST:-}"
+  [[ -n "$host" ]] || return 0
+  extra="${HERMES_EXTRA_INGRESS_PORTS:-}"
+  port="7443"
+  if [[ "$extra" != *7443* ]]; then
+    port="${HERMES_INGRESS_PORT:-8443}"
+  fi
+  printf 'https://%s:%s' "$host" "$port"
+}
+
+ensure_passport_a2a_env() {
+  local envf pub sidecar
+  load_env
+  envf="$(hermes_env_file)"
+  pub="${A2A_PUBLIC_URL:-$(identyclaw_a2a_public_url)}"
+  sidecar="${A2A_AUTH_SIDECAR_URL:-http://127.0.0.1:9910}"
+  [[ -n "$pub" ]] && upsert_env_local_kv "$envf" A2A_PUBLIC_URL "$pub"
+  upsert_env_local_kv "$envf" A2A_AUTH_SIDECAR_URL "$sidecar"
+  upsert_env_local_kv "$envf" A2A_AUTH_SIDECAR_PORT "${A2A_AUTH_SIDECAR_PORT:-9910}"
+  upsert_env_local_kv "$envf" IDENTYCLAW_A2A_AUTH "${IDENTYCLAW_A2A_AUTH:-passport-jwt}"
+  upsert_env_local_kv "$envf" IDENTYCLAW_JWT_ISSUER "${IDENTYCLAW_JWT_ISSUER:-https://api.identyclaw.com}"
+  if [[ -n "${IDENTYCLAW_JWT_AUDIENCE:-}" ]]; then
+    upsert_env_local_kv "$envf" IDENTYCLAW_JWT_AUDIENCE "$IDENTYCLAW_JWT_AUDIENCE"
+  fi
+  export A2A_PUBLIC_URL="${pub}"
+  export A2A_AUTH_SIDECAR_URL="$sidecar"
+  export A2A_AUTH_SIDECAR_PORT="${A2A_AUTH_SIDECAR_PORT:-9910}"
+  export IDENTYCLAW_A2A_AUTH="${IDENTYCLAW_A2A_AUTH:-passport-jwt}"
+  export IDENTYCLAW_JWT_ISSUER="${IDENTYCLAW_JWT_ISSUER:-https://api.identyclaw.com}"
+}
+
+probe_identyclaw_jwt_audience() {
+  local app sidecar cred
+  app="$(hermes_app_dir)"
+  sidecar="${app}/a2a-auth-sidecar"
+  [[ -f "${sidecar}/probe-audience.mjs" && -d "${sidecar}/node_modules" ]] || return 1
+  command -v node >/dev/null 2>&1 || return 1
+  cred="$(find "${app}/secrets/near-credentials" -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1 || true)"
+  [[ -n "$cred" ]] || return 1
+  IDENTYCLAW_HOME="$app" HERMES_HOME="$app" \
+    NEAR_CREDENTIALS_FILE_PATH="$cred" \
+    node "${sidecar}/probe-audience.mjs" 2>/dev/null
 }
 
 identyclaw_format_contact_uri() {
