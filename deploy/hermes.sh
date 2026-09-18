@@ -839,13 +839,14 @@ cmd_identyclaw_peer_install() {
   install_identyclaw_a2a_overlay
 
   audience="${IDENTYCLAW_JWT_AUDIENCE:-}"
-  if [[ -z "$audience" ]]; then
+  if [[ ! "$audience" =~ ^[0-9a-fA-F]{64}$ ]]; then
     audience="$(probe_identyclaw_jwt_audience || true)"
   fi
-  if [[ -n "$audience" ]]; then
+  if [[ "$audience" =~ ^[0-9a-fA-F]{64}$ ]]; then
     export IDENTYCLAW_JWT_AUDIENCE="$audience"
     echo "IDENTYCLAW_JWT_AUDIENCE=$(printf '%s' "$audience" | cut -c1-16)…"
   else
+    unset IDENTYCLAW_JWT_AUDIENCE || true
     echo "Warning: could not probe Passport owner_id — set IDENTYCLAW_JWT_AUDIENCE in env.local" >&2
   fi
 

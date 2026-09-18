@@ -22,18 +22,6 @@ process.env.SUPPRESS_STRICTNESS_CHECK = process.env.SUPPRESS_STRICTNESS_CHECK ||
 process.env.SECURITY_OPTIONS_LOGIN_MODE =
   process.env.SECURITY_OPTIONS_LOGIN_MODE || "promiscuous";
 
-const require = createRequire(import.meta.url);
-const rodit = require("@rodit/rodit-auth-be");
-const {
-  RoditClient,
-  validate_jwt_token_be,
-  login_server,
-} = rodit;
-
-const HOST = process.env.A2A_AUTH_SIDECAR_HOST || "127.0.0.1";
-const PORT = Number(process.env.A2A_AUTH_SIDECAR_PORT || 9910);
-const ISSUER = (process.env.IDENTYCLAW_JWT_ISSUER || "https://api.identyclaw.com").replace(/\/$/, "");
-
 function firstNearCredsPath() {
   const explicit =
     process.env.NEAR_CREDENTIALS_FILE_PATH ||
@@ -61,6 +49,21 @@ function applyNearEnv() {
     "genaaaa-identyclaw-com.near";
   return credPath;
 }
+
+// Rodit reads credential source env at module load — apply before require.
+applyNearEnv();
+
+const require = createRequire(import.meta.url);
+const rodit = require("@rodit/rodit-auth-be");
+const {
+  RoditClient,
+  validate_jwt_token_be,
+  login_server,
+} = rodit;
+
+const HOST = process.env.A2A_AUTH_SIDECAR_HOST || "127.0.0.1";
+const PORT = Number(process.env.A2A_AUTH_SIDECAR_PORT || 9910);
+const ISSUER = (process.env.IDENTYCLAW_JWT_ISSUER || "https://api.identyclaw.com").replace(/\/$/, "");
 
 async function createClient(role) {
   try {

@@ -1495,7 +1495,9 @@ start_identyclaw_a2a_sidecar() {
     -v "${app}/secrets:/opt/data/secrets:ro${z}" \
     -e "A2A_AUTH_SIDECAR_HOST=127.0.0.1" \
     -e "A2A_AUTH_SIDECAR_PORT=${A2A_AUTH_SIDECAR_PORT:-9910}" \
+    -e "RODIT_NEAR_CREDENTIALS_SOURCE=file" \
     -e "NEAR_CREDENTIALS_FILE_PATH=/opt/data/secrets/near-credentials/$(basename "$cred")" \
+    -e "CREDENTIALS_FILE_PATH=/opt/data/secrets/near-credentials/$(basename "$cred")" \
     -e "IDENTYCLAW_JWT_AUDIENCE=${IDENTYCLAW_JWT_AUDIENCE:-}" \
     -e "IDENTYCLAW_JWT_ISSUER=${IDENTYCLAW_JWT_ISSUER:-https://api.identyclaw.com}" \
     -e "IDENTYCLAW_NEAR_CONTRACT_ID=${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}" \
@@ -1571,16 +1573,22 @@ ensure_passport_a2a_env() {
 }
 
 probe_identyclaw_jwt_audience() {
-  local app sidecar cred
+  local app sidecar cred out
   app="$(hermes_app_dir)"
   sidecar="${app}/a2a-auth-sidecar"
   [[ -f "${sidecar}/probe-audience.mjs" && -d "${sidecar}/node_modules" ]] || return 1
   command -v node >/dev/null 2>&1 || return 1
   cred="$(find "${app}/secrets/near-credentials" -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1 || true)"
   [[ -n "$cred" ]] || return 1
-  IDENTYCLAW_HOME="$app" HERMES_HOME="$app" \
-    NEAR_CREDENTIALS_FILE_PATH="$cred" \
-    node "${sidecar}/probe-audience.mjs" 2>/dev/null
+  # Discard Rodit logs on stderr; accept only a 64-hex owner_id on stdout.
+  out="$(
+    IDENTYCLAW_HOME="$app" HERMES_HOME="$app" \
+      NEAR_CREDENTIALS_FILE_PATH="$cred" \
+      RODIT_NEAR_CREDENTIALS_SOURCE=file \
+      node "${sidecar}/probe-audience.mjs" 2>/dev/null | tr -d '\r\n' || true
+  )"
+  [[ "$out" =~ ^[0-9a-fA-F]{64}$ ]] || return 1
+  printf '%s' "$out"
 }
 
 identyclaw_format_contact_uri() {
