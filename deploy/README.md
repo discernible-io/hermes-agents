@@ -104,6 +104,8 @@ Pod nginx also reverse-proxies Hermes **native A2A** (bundled `a2a-platform` plu
 
 Enable with `platforms.a2a.enabled: true` and outbound peers under `a2a_agents:` in `config.yaml`. Put `A2A_BEARER_TOKEN` (required for remote POST) plus `A2A_PUBLIC_URL` in `.env` / `env.local`. `./hermes.sh start` seeds the platform block. OpenClaw peers that authenticate with Passport JWTs will 401 — they need this bearer token, or to stay on OpenClaw.
 
+If the Passport `webhook_url` uses a different port than `HERMES_INGRESS_PORT` (common: mint-time `:7443`, Telegram on `:10443` because OpenClaw owns `8443`), set `HERMES_EXTRA_INGRESS_PORTS=7443` in `env.local` so the pod also publishes that host port onto nginx.
+
 Host publish: Telegram webhook on **8443** (Telegram Bot API only accepts inbound webhooks on 443, 80, 88, or 8443). Operator API stays on 11642. Override `HERMES_TELEGRAM_PORT` / `HERMES_INGRESS_PORT` in `env.local` when 8443 is already taken on the host.
 
 | Host port | Maps to | Use |

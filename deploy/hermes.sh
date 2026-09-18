@@ -135,10 +135,22 @@ cmd_start_pod() {
   fi
 
   echo "Creating pod ${HERMES_POD} (ingress ${HERMES_INGRESS_PORT}, API ${HERMES_API_PORT}) ..."
+  local -a pod_ports=(
+    -p "${HERMES_INGRESS_PORT}:${HERMES_INGRESS_PORT}"
+    -p "${HERMES_API_PORT}:8642"
+  )
+  # Passport webhook_url is often :7443 (OpenClaw convention) while Telegram
+  # ingress is 10443/8443. Extra host ports map onto the same nginx listen.
+  local extra_port
+  for extra_port in ${HERMES_EXTRA_INGRESS_PORTS//,/ }; do
+    extra_port="${extra_port// /}"
+    [[ "$extra_port" =~ ^[0-9]+$ ]] || continue
+    [[ "$extra_port" != "${HERMES_INGRESS_PORT}" ]] || continue
+    pod_ports+=(-p "${extra_port}:${HERMES_INGRESS_PORT}")
+  done
   podman pod create \
     --name "$HERMES_POD" \
-    -p "${HERMES_INGRESS_PORT}:${HERMES_INGRESS_PORT}" \
-    -p "${HERMES_API_PORT}:8642"
+    "${pod_ports[@]}"
 
   hermes_gateway_run_args args
   args+=(--pod "$HERMES_POD")
@@ -168,6 +180,9 @@ cmd_start_pod() {
   echo "  Webhooks: https://${HERMES_PUBLIC_HOST}:${HERMES_INGRESS_PORT}/webhooks/<route>"
   echo "  Telegram: https://${HERMES_PUBLIC_HOST}:${HERMES_INGRESS_PORT}/telegram"
   echo "  A2A:      https://${HERMES_PUBLIC_HOST}:${HERMES_INGRESS_PORT}/a2a"
+  if [[ -n "${HERMES_EXTRA_INGRESS_PORTS:-}" ]]; then
+    echo "  Extra:    host ports ${HERMES_EXTRA_INGRESS_PORTS} → nginx ${HERMES_INGRESS_PORT}"
+  fi
 }
 
 cmd_start() {
