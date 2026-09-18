@@ -29,11 +29,14 @@ platforms:
     enabled: true
 a2a_agents:
   bdshbmlhsdbh:
-    url: "https://hermes.dihola.io:10443/a2a"
+    url: "https://hermes.dihola.io:7443"
     timeout: 120
 ```
 
 No `auth: { type: bearer, token: ... }`. Empty / `login_server` is the match.
+Do **not** hardcode a peer JWT `aud` — mint via `login_server` (or discover
+`extensions.identyclaw.audience` on their Agent Card). Inbound
+`IDENTYCLAW_JWT_AUDIENCE` stays **this** agent's Passport `owner_id` only.
 
 Run the sidecar from `sidecar/` (`npm install` then `node server.mjs`) on
 `127.0.0.1:9910` with `NEAR_CREDENTIALS_FILE_PATH` and
@@ -54,6 +57,8 @@ Agent Card (`GET /.well-known/agent-card.json` and
 "extensions": {
   "identyclaw": {
     "auth": "passport-jwt",
+    "audience": "<this agent Passport owner_id>",
+    "issuer": "https://api.identyclaw.com",
     "login": {
       "timestamp": "/api/login/timestamp",
       "login": "/api/login"

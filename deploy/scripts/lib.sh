@@ -1329,7 +1329,9 @@ ensure_passport_a2a_config_seed() {
   [[ -f "$cfg" ]] || return 0
   load_env
   command -v python3 >/dev/null 2>&1 || return 0
-  peer_url="${IDENTYCLAW_A2A_PEER_BDSHBMLHSDBH_URL:-https://hermes.dihola.io:10443/a2a}"
+  # Passport webhook_url for Hermes Trimegisto (bdshbmlhsdbh) is :7443; :10443 is the
+  # same nginx ingress but not the mint-time URL peers should hardcode.
+  peer_url="${IDENTYCLAW_A2A_PEER_BDSHBMLHSDBH_URL:-https://hermes.dihola.io:7443}"
   python3 - "$cfg" "${A2A_PORT:-9900}" "$peer_url" <<'PY'
 import sys
 from pathlib import Path
@@ -1414,9 +1416,14 @@ if not isinstance(peer, dict):
     peer = {}
     agents["bdshbmlhsdbh"] = peer
     changed.append("a2a_agents.bdshbmlhsdbh")
-url = str(peer.get("url") or "").strip()
-stale = (not url) or url.rstrip("/").endswith(":7443") or url.rstrip("/").endswith(":7443/a2a")
-if stale and peer_url:
+url = str(peer.get("url") or "").strip().rstrip("/")
+# Seed when missing; migrate the old :10443 fallback to the Passport :7443 URL.
+# Do not treat :7443 as stale — that is the authoritative peer base.
+legacy = {
+    "https://hermes.dihola.io:10443",
+    "https://hermes.dihola.io:10443/a2a",
+}
+if (not url or url in legacy) and peer_url:
     peer["url"] = peer_url
     changed.append("a2a_agents.bdshbmlhsdbh.url")
 if peer.get("timeout") in (None, ""):

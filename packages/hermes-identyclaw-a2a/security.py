@@ -50,15 +50,21 @@ def passport_mode() -> bool:
 
 
 def identyclaw_card_extensions() -> dict:
-    return {
-        "identyclaw": {
-            "auth": "passport-jwt",
-            "login": {
-                "timestamp": "/api/login/timestamp",
-                "login": "/api/login",
-            },
-        }
+    """Agent Card extensions peers use to discover Passport auth (aud is authoritative)."""
+    ext: dict = {
+        "auth": "passport-jwt",
+        "login": {
+            "timestamp": "/api/login/timestamp",
+            "login": "/api/login",
+        },
     }
+    aud = jwt_audience()
+    if aud:
+        ext["audience"] = aud
+    iss = jwt_issuer()
+    if iss:
+        ext["issuer"] = iss
+    return {"identyclaw": ext}
 
 
 def login_base_url(url: str) -> str:

@@ -43,12 +43,28 @@ def test_login_base_url_strips_a2a_rpc_path(passport):
     )
 
 
-def test_agent_card_extensions_advertise_passport_jwt(passport):
+def test_agent_card_extensions_advertise_passport_jwt(passport, monkeypatch):
+    monkeypatch.delenv("IDENTYCLAW_JWT_AUDIENCE", raising=False)
+    monkeypatch.delenv("IDENTYCLAW_JWT_ISSUER", raising=False)
     ext = passport.identyclaw_card_extensions()
     ident = ext["identyclaw"]
     assert ident["auth"] == "passport-jwt"
     assert ident["login"]["timestamp"] == "/api/login/timestamp"
     assert ident["login"]["login"] == "/api/login"
+    assert "audience" not in ident
+    # Default issuer is always published so peers can verify iss.
+    assert ident["issuer"] == "https://api.identyclaw.com"
+
+    monkeypatch.setenv("IDENTYCLAW_JWT_AUDIENCE", "1f02fd08b691062e26ece7200e38c0293612e4aa8b55f45d48d1d10043965a8f")
+    monkeypatch.setenv("IDENTYCLAW_JWT_ISSUER", "https://api.identyclaw.com")
+    ident = passport.identyclaw_card_extensions()["identyclaw"]
+    assert ident["audience"] == "1f02fd08b691062e26ece7200e38c0293612e4aa8b55f45d48d1d10043965a8f"
+    assert ident["issuer"] == "https://api.identyclaw.com"
+
+
+def test_login_base_url_prefers_passport_7443_origin(passport):
+    assert passport.login_base_url("https://hermes.dihola.io:7443/a2a") == "https://hermes.dihola.io:7443"
+    assert passport.login_base_url("https://hermes.dihola.io:7443/") == "https://hermes.dihola.io:7443"
 
 
 class _Sidecar(BaseHTTPRequestHandler):
