@@ -1463,13 +1463,20 @@ install_identyclaw_a2a_overlay() {
 }
 
 start_identyclaw_a2a_sidecar() {
-  local app z cred sidecar name image near_dir
+  local app z cred sidecar name image near_dir cred_base
   app="$(hermes_app_dir)"
   sidecar="${app}/a2a-auth-sidecar"
-  [[ -f "${sidecar}/server.mjs" && -d "${sidecar}/node_modules" ]] || {
+  if [[ ! -f "${sidecar}/server.mjs" ]]; then
+    if ! podman unshare test -f "${sidecar}/server.mjs" 2>/dev/null; then
+      echo "Passport A2A sidecar not installed — run: ./hermes.sh identyclaw-peer-install" >&2
+      return 1
+    fi
+  fi
+  if [[ ! -d "${sidecar}/node_modules" ]] \
+    && ! podman unshare test -d "${sidecar}/node_modules" 2>/dev/null; then
     echo "Passport A2A sidecar not installed — run: ./hermes.sh identyclaw-peer-install" >&2
     return 1
-  }
+  fi
   load_env
   z="$(selinux_mount_suffix)"
   name="${HERMES_A2A_AUTH_CONTAINER:-hermes-a2a-auth}"
@@ -1479,11 +1486,19 @@ start_identyclaw_a2a_sidecar() {
     podman pull "$image"
   fi
   near_dir="${app}/secrets/near-credentials"
-  cred="$(find "$near_dir" -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1 || true)"
-  [[ -n "$cred" ]] || {
+  cred_base="$(
+    podman unshare bash -c "
+      find $(printf '%q' "$near_dir") -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1
+    " 2>/dev/null || true
+  )"
+  if [[ -z "$cred_base" ]]; then
+    cred_base="$(find "$near_dir" -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1 || true)"
+  fi
+  [[ -n "$cred_base" ]] || {
     echo "No NEAR credentials under ${near_dir}" >&2
     return 1
   }
+  cred="$(basename "$cred_base")"
   podman rm -f "$name" 2>/dev/null || true
   echo "Starting Passport auth sidecar ${name} on 127.0.0.1:${A2A_AUTH_SIDECAR_PORT:-9910} ..."
   podman run -d \
@@ -1496,8 +1511,8 @@ start_identyclaw_a2a_sidecar() {
     -e "A2A_AUTH_SIDECAR_HOST=127.0.0.1" \
     -e "A2A_AUTH_SIDECAR_PORT=${A2A_AUTH_SIDECAR_PORT:-9910}" \
     -e "RODIT_NEAR_CREDENTIALS_SOURCE=file" \
-    -e "NEAR_CREDENTIALS_FILE_PATH=/opt/data/secrets/near-credentials/$(basename "$cred")" \
-    -e "CREDENTIALS_FILE_PATH=/opt/data/secrets/near-credentials/$(basename "$cred")" \
+    -e "NEAR_CREDENTIALS_FILE_PATH=/opt/data/secrets/near-credentials/${cred}" \
+    -e "CREDENTIALS_FILE_PATH=/opt/data/secrets/near-credentials/${cred}" \
     -e "IDENTYCLAW_JWT_AUDIENCE=${IDENTYCLAW_JWT_AUDIENCE:-}" \
     -e "IDENTYCLAW_JWT_ISSUER=${IDENTYCLAW_JWT_ISSUER:-https://api.identyclaw.com}" \
     -e "IDENTYCLAW_NEAR_CONTRACT_ID=${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}" \
@@ -1535,7 +1550,11 @@ identyclaw_a2a_overlay_src() {
 identyclaw_a2a_overlay_installed() {
   local app
   app="$(hermes_app_dir)"
-  [[ -f "${app}/plugins/a2a-platform/plugin.yaml" ]]
+  # App dir is often mode 0700 as container UID 10000 while the gateway runs.
+  if [[ -r "${app}/plugins/a2a-platform/plugin.yaml" ]]; then
+    return 0
+  fi
+  podman unshare test -f "${app}/plugins/a2a-platform/plugin.yaml" 2>/dev/null
 }
 
 identyclaw_a2a_public_url() {
