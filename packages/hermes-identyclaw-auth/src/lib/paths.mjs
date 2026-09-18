@@ -85,7 +85,13 @@ export function ensureRoditCredentialEnv(credentialsPath = null) {
   const filePath = resolveNearCredentialsFilePath(credentialsPath);
   if (filePath && filePath !== "(env)") {
     process.env.NEAR_CREDENTIALS_FILE_PATH = filePath;
+    process.env.CREDENTIALS_FILE_PATH = filePath;
   }
+  // Same default as origin/main packages/hermes-identyclaw-a2a/sidecar/server.mjs
+  process.env.NEAR_CONTRACT_ID =
+    process.env.NEAR_CONTRACT_ID ||
+    process.env.IDENTYCLAW_NEAR_CONTRACT_ID ||
+    "genaaaa-identyclaw-com.near";
   if (!process.env.RODIT_NEAR_CREDENTIALS_SOURCE?.trim()) {
     if (process.env.NEAR_CREDENTIALS_FILE_PATH?.trim()) {
       process.env.RODIT_NEAR_CREDENTIALS_SOURCE = "file";

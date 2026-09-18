@@ -96,9 +96,11 @@ start_identyclaw_auth_container() {
     -e "IDENTYCLAW_HOME=${app}"
     -e "HERMES_HOME=${app}"
     -e "IDENTYCLAW_AUTH_PORT=${port}"
+    -e "IDENTYCLAW_NEAR_CONTRACT_ID=${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}"
+    -e "NEAR_CONTRACT_ID=${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}"
   )
   if [[ -n "$cred" ]]; then
-    args+=(-e "NEAR_CREDENTIALS_FILE_PATH=${cred}" -e "RODIT_NEAR_CREDENTIALS_SOURCE=file")
+    args+=(-e "NEAR_CREDENTIALS_FILE_PATH=${cred}" -e "CREDENTIALS_FILE_PATH=${cred}" -e "RODIT_NEAR_CREDENTIALS_SOURCE=file")
   fi
   if [[ -n "${IDENTYCLAW_JWT_AUDIENCE:-}" ]]; then
     args+=(-e "IDENTYCLAW_JWT_AUDIENCE=${IDENTYCLAW_JWT_AUDIENCE}")
