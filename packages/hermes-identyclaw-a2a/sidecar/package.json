@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "@rodit/rodit-auth-be": "9.14.0",
-    "express": ">=4.21.2,<5"
+    "express": ">=4.21.2 <5"
   },
   "engines": {
     "node": ">=22.19.0"
