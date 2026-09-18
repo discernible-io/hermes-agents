@@ -1467,7 +1467,16 @@ install_identyclaw_a2a_overlay() {
   mkdir -p "${app}/plugins"
   rm -rf "$dest"
   mkdir -p "$dest"
-  cp -a "${src}/plugin.yaml" "${src}/__init__.py" "${src}/adapter.py" "${src}/security.py" "${src}/tools.py" "${src}/README.md" "$dest/"
+  cp -a "${src}/plugin.yaml" "${src}/__init__.py" "${src}/adapter.py" \
+    "${src}/security.py" "${src}/directory.py" "${src}/tools.py" "${src}/README.md" "$dest/"
+  # Keep the IdentyClaw skill in sync (A2A directory discovery docs).
+  if [[ -f "${HERMES_ROOT}/skills/identyclaw/SKILL.md" ]]; then
+    mkdir -p "${app}/skills/identity/identyclaw"
+    cp -a "${HERMES_ROOT}/skills/identyclaw/SKILL.md" "${app}/skills/identity/identyclaw/SKILL.md"
+  elif [[ -f "${HERMES_ROOT}/deploy/skills/identyclaw/SKILL.md" ]]; then
+    mkdir -p "${app}/skills/identity/identyclaw"
+    cp -a "${HERMES_ROOT}/deploy/skills/identyclaw/SKILL.md" "${app}/skills/identity/identyclaw/SKILL.md"
+  fi
   mkdir -p "$sidecar"
   cp -a "${src}/sidecar/server.mjs" "${src}/sidecar/package.json" "${src}/sidecar/probe-audience.mjs" "$sidecar/"
   if ! command -v npm >/dev/null 2>&1; then
