@@ -46,6 +46,8 @@ Commands:
   ensure_session [--force] [--base URL]
   list_sessions
   me [--base URL]
+  agents [--limit N] [--cursor …] [--base URL]
+  peer <tokenId> [--base URL]
   request METHOD /api/path [--body JSON] [--base URL]
   create_hola [--recipient ID] [--base URL]
   verify_hola --hola '...' [--expected MUNDO] [--base URL]
@@ -63,6 +65,8 @@ function parseArgs(argv) {
     else if (a === "--hola" && argv[i + 1]) args.hola = argv[++i];
     else if (a === "--expected" && argv[i + 1]) args.expected = argv[++i];
     else if (a === "--credentials" && argv[i + 1]) args.credentials = argv[++i];
+    else if (a === "--limit" && argv[i + 1]) args.limit = argv[++i];
+    else if (a === "--cursor" && argv[i + 1]) args.cursor = argv[++i];
     else if (a === "--help" || a === "-h") args.help = true;
     else args._.push(a);
   }
@@ -206,6 +210,42 @@ async function main() {
       case "me":
         print(await me(baseUrl));
         break;
+      case "agents": {
+        const limit = Math.max(1, Math.min(parseInt(args.limit || "25", 10) || 25, 100));
+        let url = `${baseUrl}/api/agents?limit=${limit}`;
+        if (args.cursor) url += `&cursor=${encodeURIComponent(args.cursor)}`;
+        const res = await fetch(url, { headers: { accept: "application/json" } });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(`GET /api/agents failed (${res.status}): ${JSON.stringify(data)}`);
+        print(data);
+        break;
+      }
+      case "peer": {
+        const tokenId = args._[1];
+        if (!tokenId) throw new Error("usage: idcp peer <tokenId>");
+        const id = encodeURIComponent(String(tokenId).trim());
+        const res = await fetch(`${baseUrl}/api/identity/token/${id}/public`, {
+          headers: { accept: "application/json" },
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(`GET /api/identity/token/${tokenId}/public failed (${res.status})`);
+        }
+        print({
+          ok: true,
+          tokenId: data.tokenId || tokenId,
+          displayName: data.displayName || null,
+          creature: data.creature || null,
+          webhookUrl: data.webhookUrl || null,
+          ownerAccountId: data.ownerAccountId || null,
+          contactUris: data.contactUris || [],
+          avatarUrl: data.avatarUrl || null,
+          a2aHint: data.webhookUrl
+            ? `a2a_call agent=${data.tokenId || tokenId}  # or URL ${data.webhookUrl}`
+            : null,
+        });
+        break;
+      }
       case "request": {
         const method = args._[1];
         const apiPath = args._[2];

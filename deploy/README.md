@@ -110,17 +110,20 @@ fallback only when the overlay is **not** installed.
 | `POST /` | A2A JSON-RPC |
 
 Inbound identity is Passport `token_id` via sidecar `validate_jwt`. Outbound
-peers under `a2a_agents:` use sidecar `login_server` against the peer base URL
-— do **not** put `auth: { type: bearer, token: ... }` on those entries. Set
-`IDENTYCLAW_JWT_AUDIENCE` (Passport `owner_id`) and `A2A_PUBLIC_URL` (Passport
-webhook origin, e.g. `https://identyclaw-concierge.identyclaw.com:7443`).
+peers resolve dynamically from **Passport `tokenId`** via
+`api.identyclaw.com` (`GET /api/identity/token/{id}/public` → `webhookUrl`),
+then authenticate with sidecar `login_server`. Optional `a2a_agents:` entries
+are overrides only — do **not** put `auth: { type: bearer, token: ... }` on
+those entries. Set `IDENTYCLAW_JWT_AUDIENCE` (this host's Passport `owner_id`)
+and `A2A_PUBLIC_URL` (Passport webhook origin, e.g.
+`https://identyclaw-concierge.identyclaw.com:7443`).
 `./hermes.sh start` seeds `platforms.a2a` and enables the overlay.
 
-Peer Hermes Trimegisto (`bdshbmlhsdbh`) Passport base is
-`https://hermes.dihola.io:7443` (also reachable on `:10443` via the same
-ingress). Prefer the Passport URL; outbound `login_server` sets JWT `aud`
-from their `/api/login` — do not hardcode a peer audience. Inbound
-`IDENTYCLAW_JWT_AUDIENCE` is **this** host's Passport `owner_id` only.
+Peer Hermes Trimegisto (`bdshbmlhsdbh`) is discovered by tokenId (Passport
+`webhookUrl`, currently `https://hermes.dihola.io:7443`). Prefer tokenId over
+hardcoded hostnames; outbound `login_server` sets JWT `aud` from their
+`/api/login`. Inbound `IDENTYCLAW_JWT_AUDIENCE` is **this** host's Passport
+`owner_id` only.
 
 If the Passport `webhook_url` uses a different port than `HERMES_INGRESS_PORT` (common: mint-time `:7443`, Telegram on `:10443` because OpenClaw owns `8443`), set `HERMES_EXTRA_INGRESS_PORTS=7443` in `env.local` so the pod also publishes that host port onto nginx.
 

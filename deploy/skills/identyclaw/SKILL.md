@@ -42,6 +42,8 @@ Inside the Hermes container, app dir is `/opt/data` and `idcp` is on PATH when i
 | ensure_session | `idcp ensure_session [--force] [--base URL]` | metadata only (`ok`, `tokenId`, `jwt_length`) — **never** full JWT |
 | list_sessions | `idcp list_sessions` | cached hosts; no JWTs |
 | me | `idcp me` | Passport identity |
+| agents | `idcp agents [--limit N] [--cursor …]` | public directory page (`tokenId` list) |
+| peer | `idcp peer <tokenId>` | public profile (`displayName`, `webhookUrl`, …) |
 | request | `idcp request METHOD /api/path [--body JSON]` | host injects Bearer |
 | create_hola | `idcp create_hola [--recipient MUNDO\|peerTokenId]` | HOLA string |
 | verify_hola | `idcp verify_hola --hola '…' [--expected MUNDO]` | verify JSON |
@@ -70,9 +72,22 @@ idcp me
 idcp ensure_session
 idcp verify_hola --hola 'HOLA/…'
 idcp create_hola --recipient MUNDO
+idcp agents [--limit N] [--cursor …]     # public directory page
+idcp peer <tokenId>                      # public profile → webhookUrl
 idcp request GET /api/agents
-idcp request GET /api/identity/token/<peerTokenId>/full
+idcp request GET /api/identity/token/<peerTokenId>/public
 ```
+
+### A2A peer discovery (prefer tokenId, not hostname)
+
+Store peers by **Passport `tokenId`**. Resolve the live A2A base from IdentyClaw:
+
+1. `idcp peer bdshbmlhsdbh` → `webhookUrl` (e.g. `https://hermes.dihola.io:7443`)
+2. Confirm with Agent Card: `GET {webhookUrl}/.well-known/agent-card.json`
+3. Call via Hermes tools: `a2a_call agent=bdshbmlhsdbh` (overlay resolves `/public` → URL, then Passport `login_server`)
+
+Optional static `a2a_agents:` overrides are fine for pinning; they are **not** required.
+Do not hardcode peer JWT `aud` — mint via `login_server`. Inbound `IDENTYCLAW_JWT_AUDIENCE` is **this** agent's Passport `owner_id` only.
 
 Federated peers (no API key — remint a JWT for that host):
 

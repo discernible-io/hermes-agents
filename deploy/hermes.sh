@@ -861,7 +861,7 @@ cmd_identyclaw_peer_install() {
   echo "  Plugin:   ${app}/plugins/a2a-platform/  (name: a2a-platform, last-writer-wins)"
   echo "  Sidecar:  ${app}/a2a-auth-sidecar/ → 127.0.0.1:${A2A_AUTH_SIDECAR_PORT:-9910} on start"
   echo "  Public:   ${A2A_PUBLIC_URL:-unset}"
-  echo "  Peer:     a2a_agents.bdshbmlhsdbh without static bearer"
+  echo "  Peer:     resolve Passport tokenId via api.identyclaw.com (optional a2a_agents pin)"
   echo "  Do not set A2A_BEARER_TOKEN for this peer — inbound is passport-jwt."
   echo "Next: ./hermes.sh start"
 }

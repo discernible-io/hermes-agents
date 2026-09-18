@@ -27,13 +27,16 @@ plugins:
 platforms:
   a2a:
     enabled: true
-a2a_agents:
-  bdshbmlhsdbh:
-    url: "https://hermes.dihola.io:7443"
-    timeout: 120
+# Optional pin only — prefer Passport tokenId resolution via api.identyclaw.com:
+# a2a_agents:
+#   bdshbmlhsdbh:
+#     url: "https://hermes.dihola.io:7443"
+#     timeout: 120
 ```
 
 No `auth: { type: bearer, token: ... }`. Empty / `login_server` is the match.
+Call peers by **tokenId**: `a2a_call agent=bdshbmlhsdbh` resolves
+`GET https://api.identyclaw.com/api/identity/token/bdshbmlhsdbh/public` → `webhookUrl`.
 Do **not** hardcode a peer JWT `aud` — mint via `login_server` (or discover
 `extensions.identyclaw.audience` on their Agent Card). Inbound
 `IDENTYCLAW_JWT_AUDIENCE` stays **this** agent's Passport `owner_id` only.

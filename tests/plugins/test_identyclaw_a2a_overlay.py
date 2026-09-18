@@ -126,3 +126,74 @@ def test_login_server_uses_peer_base_and_caches(passport, sidecar_url):
     again = passport.login_server("https://hermes.dihola.io:10443/a2a")
     assert again == "peer-jwt"
     assert _Sidecar.logins == ["https://hermes.dihola.io:10443"]
+
+
+def _load_directory():
+    spec = importlib.util.spec_from_file_location(
+        "identyclaw_a2a_directory", OVERLAY / "directory.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_normalize_token_id_accepts_short_and_long_forms():
+    directory = _load_directory()
+    assert directory.normalize_token_id("bdshbmlhsdbh") == "bdshbmlhsdbh"
+    assert directory.normalize_token_id("did:rodit:bdshbmlhsdbh") == "bdshbmlhsdbh"
+    assert (
+        directory.normalize_token_id(
+            "bc=near.org;sc=genaaaa-identyclaw-com.near;id=bdshbmlhsdbh"
+        )
+        == "bdshbmlhsdbh"
+    )
+    assert directory.normalize_token_id("https://hermes.dihola.io:7443") == ""
+    assert directory.normalize_token_id("not-a-token") == ""
+
+
+def test_resolve_peer_by_token_uses_public_webhook(monkeypatch):
+    directory = _load_directory()
+    directory.invalidate()
+
+    class _Handler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):  # noqa: A002
+            return
+
+        def do_GET(self):  # noqa: N802
+            assert self.path.endswith("/api/identity/token/bdshbmlhsdbh/public")
+            body = json.dumps({
+                "tokenId": "bdshbmlhsdbh",
+                "displayName": "Hermes Trimegisto",
+                "webhookUrl": "https://hermes.dihola.io:7443",
+                "ownerAccountId": "1f02fd08b691062e26ece7200e38c0293612e4aa8b55f45d48d1d10043965a8f",
+                "creature": "Messenger",
+            }).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    httpd = HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setenv(
+        "IDENTYCLAW_BASE_URL",
+        f"http://127.0.0.1:{httpd.server_address[1]}",
+    )
+    try:
+        peer = directory.resolve_peer_by_token("bdshbmlhsdbh")
+        assert peer is not None
+        assert peer["url"] == "https://hermes.dihola.io:7443"
+        assert peer["tokenId"] == "bdshbmlhsdbh"
+        assert peer["displayName"] == "Hermes Trimegisto"
+        assert peer["source"] == "identyclaw-directory"
+        # Cache hit — second call must not require another successful handler path
+        again = directory.resolve_peer_by_token(
+            "bc=near.org;sc=genaaaa-identyclaw-com.near;id=bdshbmlhsdbh"
+        )
+        assert again["url"] == peer["url"]
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
