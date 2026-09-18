@@ -167,6 +167,7 @@ cmd_start_pod() {
   echo "  Ingress:  https://${HERMES_PUBLIC_HOST}:${HERMES_INGRESS_PORT}/health"
   echo "  Webhooks: https://${HERMES_PUBLIC_HOST}:${HERMES_INGRESS_PORT}/webhooks/<route>"
   echo "  Telegram: https://${HERMES_PUBLIC_HOST}:${HERMES_INGRESS_PORT}/telegram"
+  echo "  A2A:      https://${HERMES_PUBLIC_HOST}:${HERMES_INGRESS_PORT}/a2a"
 }
 
 cmd_start() {
@@ -193,6 +194,7 @@ cmd_start() {
     ensure_tls_certs
     ensure_hermes_nginx_conf
     ensure_webhook_config_seed || true
+    ensure_a2a_config_seed || true
     normalize_tls_certs
   fi
 

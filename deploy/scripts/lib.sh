@@ -40,6 +40,8 @@ _GATEWAY_ENV_KEYS=(
   TELEGRAM_HOME_CHANNEL_NAME TELEGRAM_PROXY
   TELEGRAM_WEBHOOK_URL TELEGRAM_WEBHOOK_PORT TELEGRAM_WEBHOOK_SECRET
   TELEGRAM_WEBHOOK_HOST GATEWAY_ALLOW_ALL_USERS
+  A2A_PORT A2A_HOST A2A_PUBLIC_URL A2A_AGENT_NAME A2A_BEARER_TOKEN
+  A2A_PEER_TOKENS A2A_ALLOW_ALL_USERS
 )
 
 # Upsert shell-sourced values into .env when the key is missing or empty there.
@@ -1248,6 +1250,72 @@ platforms:
 """
 cfg_path.write_text(text.rstrip() + "\n" + block)
 print(f"Appended platforms.webhook seed (no secret) to {cfg_path}")
+PY
+}
+
+# Seed platforms.a2a + enable the outbound a2a toolset. Token/host live in .env
+# (A2A_BEARER_TOKEN / A2A_PEER_TOKENS); without a token the adapter binds localhost.
+ensure_a2a_config_seed() {
+  local app cfg
+  app="$(hermes_app_dir)"
+  cfg="${app}/config.yaml"
+  [[ -f "$cfg" ]] || return 0
+  load_env
+  command -v python3 >/dev/null 2>&1 || return 0
+  python3 - "$cfg" "${A2A_PORT:-9900}" <<'PY'
+import sys
+from pathlib import Path
+
+try:
+    import yaml
+except ImportError:
+    print("python3-yaml missing — skip A2A config seed", file=sys.stderr)
+    raise SystemExit(0)
+
+cfg_path = Path(sys.argv[1])
+port = int(sys.argv[2])
+raw = cfg_path.read_text()
+data = yaml.safe_load(raw) or {}
+changed = []
+
+platforms = data.setdefault("platforms", {})
+if not isinstance(platforms, dict):
+    platforms = {}
+    data["platforms"] = platforms
+a2a = platforms.get("a2a")
+if not isinstance(a2a, dict):
+    a2a = {}
+    platforms["a2a"] = a2a
+if not a2a.get("enabled"):
+    a2a["enabled"] = True
+    changed.append("platforms.a2a.enabled")
+extra = a2a.get("extra")
+if not isinstance(extra, dict):
+    extra = {}
+    a2a["extra"] = extra
+if extra.get("port") in (None, ""):
+    extra["port"] = port
+    changed.append("platforms.a2a.extra.port")
+
+pts = data.setdefault("platform_toolsets", {})
+if not isinstance(pts, dict):
+    pts = {}
+    data["platform_toolsets"] = pts
+for plat in ("cli", "telegram", "a2a"):
+    cur = pts.get(plat)
+    if not isinstance(cur, list):
+        cur = []
+        pts[plat] = cur
+    if "a2a" not in cur:
+        cur.append("a2a")
+        changed.append(f"platform_toolsets.{plat}")
+
+if not changed:
+    print("config.yaml already has platforms.a2a + a2a toolset")
+    raise SystemExit(0)
+
+cfg_path.write_text(yaml.safe_dump(data, sort_keys=False, default_flow_style=False, allow_unicode=True))
+print("Seeded A2A: " + ", ".join(changed))
 PY
 }
 

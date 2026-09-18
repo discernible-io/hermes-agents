@@ -94,6 +94,16 @@ This wrapper can expose it behind an **nginx TLS sidecar** in a dedicated Podman
 
 Auth is Hermes **HMAC** via `WEBHOOK_SECRET` in `.env` (not IdentyClaw RODiT; not `config.yaml`). nginx only terminates TLS and proxies `/webhooks/`.
 
+Pod nginx also reverse-proxies Hermes **native A2A** (bundled `a2a-platform` plugin — not OpenClaw `identyclaw-a2a`):
+
+| Path | Upstream |
+|------|----------|
+| `GET/POST /a2a` | A2A JSON-RPC (Passport peers conventionally POST here) |
+| `GET /.well-known/agent-card.json` | Agent Card |
+| `POST /` | A2A JSON-RPC |
+
+Enable with `platforms.a2a.enabled: true` and outbound peers under `a2a_agents:` in `config.yaml`. Put `A2A_BEARER_TOKEN` (required for remote POST) plus `A2A_PUBLIC_URL` in `.env` / `env.local`. `./hermes.sh start` seeds the platform block. OpenClaw peers that authenticate with Passport JWTs will 401 — they need this bearer token, or to stay on OpenClaw.
+
 Host publish: Telegram webhook on **8443** (Telegram Bot API only accepts inbound webhooks on 443, 80, 88, or 8443). Operator API stays on 11642. Override `HERMES_TELEGRAM_PORT` / `HERMES_INGRESS_PORT` in `env.local` when 8443 is already taken on the host.
 
 | Host port | Maps to | Use |

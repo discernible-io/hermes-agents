@@ -116,6 +116,22 @@ http {
             proxy_pass http://hermes_a2a;
         }
 
+        # Passport webhook_url peers hit /a2a (OpenClaw identyclaw-a2a convention).
+        # Strip the prefix so Hermes A2A sees / and /.well-known/... as usual.
+        location = /a2a {
+            limit_req zone=hermes_ingress burst=240 nodelay;
+            limit_req zone=hermes_public burst=120 nodelay;
+            include /etc/nginx/inc/hermes-proxy.inc;
+            proxy_pass http://hermes_a2a/;
+        }
+
+        location ^~ /a2a/ {
+            limit_req zone=hermes_ingress burst=240 nodelay;
+            limit_req zone=hermes_public burst=120 nodelay;
+            include /etc/nginx/inc/hermes-proxy.inc;
+            proxy_pass http://hermes_a2a/;
+        }
+
         location / {
             return 404;
         }
