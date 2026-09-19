@@ -22,7 +22,7 @@
   },
   "dependencies": {
     "@rodit/hola-client": "file:./vendor/hola-client",
-    "@rodit/rodit-auth-be": ">=9.16.0 <10",
+    "@rodit/rodit-auth-be": "^9.16.2",
     "bs58": "^5.0.0",
     "hi-base32": "^0.5.1",
     "tweetnacl": "^1.0.3"
