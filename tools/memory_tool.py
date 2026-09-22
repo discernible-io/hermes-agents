@@ -247,7 +247,21 @@ def _memory_target_error(store: "MemoryStore", target: str) -> Optional[Dict[str
 
 
 def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[str, Any]:
-    """Replay a staged write against the store, bypassing the gate (/memory approve)."""
+    """Replay a staged write against the store, bypassing the gate (/memory approve).
+
+    The replay sits outside the agent turn's consolidation-failure cap: a queue
+    of stale background-review batches must each report their own mismatch or
+    budget error, and a rejection must leave the agent's remaining attempts
+    unchanged.
+    """
+    with store.replay_without_turn_budget() as mark_success:
+        result = _replay_memory_pending(payload, store)
+        if result.get("success"):
+            mark_success()
+        return result
+
+
+def _replay_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[str, Any]:
     action, target = payload.get("action"), payload.get("target", "memory")
     target_error = _memory_target_error(store, target)
     if target_error is not None:

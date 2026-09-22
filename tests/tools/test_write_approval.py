@@ -162,6 +162,57 @@ _SKILL = (
 # ---------------------------------------------------------------------------
 
 
+def test_approve_queue_does_not_spend_turn_consolidation_cap(hermes_home):
+    """A review queue is not an agent turn. The cap (#42405) stops a model
+    that keeps missing old_text; spending it inside ``/memory approve all``
+    rewrote the fourth staged write as "stop retrying" and dropped its real
+    error. A failed approve leaves the agent's remaining attempts unchanged;
+    a successful one still clears the counter."""
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools.memory_tool import MemoryStore
+    from tools import write_approval as wa
+
+    store = MemoryStore()
+    store.load_from_disk()
+    store.add("memory", "fact A")
+    cap = store._MAX_CONSOLIDATION_FAILURES_PER_TURN
+    for _ in range(cap + 1):
+        store.replace("memory", "missing", "x")
+    spent = store._consolidation_failures
+    assert spent == cap + 1
+
+    for i in range(cap + 1):
+        wa.stage_write(
+            "memory",
+            {"action": "batch", "target": "memory", "operations": [
+                {"action": "replace", "old_text": f"no-such-entry-{i}", "content": "y"},
+            ]},
+            summary=f"stale {i}",
+            origin="background_review",
+        )
+
+    out = handle_pending_subcommand(wa.MEMORY, ["approve", "all"], memory_store=store)
+    assert "Approved 0" in out
+    assert out.count("no entry matched") == cap + 1
+    assert "continue with your reply" not in out
+    assert store._consolidation_failures == spent
+    # The agent's next tool failure is still the terminal one.
+    again = store.replace("memory", "missing", "x")
+    assert again.get("done") is True
+    assert "continue with your reply" in again["error"]
+
+    wa.stage_write(
+        "memory",
+        {"action": "replace", "target": "memory", "old_text": "fact A", "content": "fact B"},
+        summary="good",
+        origin="foreground",
+    )
+    out = handle_pending_subcommand(wa.MEMORY, ["approve", "all"], memory_store=store)
+    assert "Approved 1" in out
+    assert store.memory_entries == ["fact B"]
+    assert store._consolidation_failures == 0
+
+
 def test_handle_approve_all(hermes_home):
     from hermes_cli.write_approval_commands import handle_pending_subcommand
     from tools.memory_tool import MemoryStore

@@ -93,6 +93,33 @@ class MemoryStore:
         """Call at turn start."""
         self._consolidation_failures = 0
 
+    @contextmanager
+    def replay_without_turn_budget(self):
+        """Apply a human-approved write without spending the agent turn's failure cap.
+
+        ``/memory approve`` replays staged ops on the same store the agent may be
+        mid-turn on. The cap (#42405) exists so a model that keeps missing
+        ``old_text`` stops and answers. Spending it on a review queue hides the
+        staged write's own error — the fourth failure in one ``approve all``
+        becomes "stop retrying" — and a rejected approve must not change how
+        many attempts the agent has left. Yields ``mark_success``; call it only
+        when the replay committed, so a successful write still clears the
+        counter the way ``_success_response`` does.
+        """
+        prior = self._consolidation_failures
+        self._consolidation_failures = 0
+        succeeded = False
+
+        def mark_success() -> None:
+            nonlocal succeeded
+            succeeded = True
+
+        try:
+            yield mark_success
+        finally:
+            if not succeeded:
+                self._consolidation_failures = prior
+
     def _consolidation_failure(self, response: Dict[str, Any]) -> Dict[str, Any]:
         """Count a consolidation failure: under the per-turn cap return ``response``
         (it says how to retry); past it a TERMINAL result so the model stops looping.
