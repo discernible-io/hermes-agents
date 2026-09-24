@@ -34,14 +34,16 @@ See root [README §5b](../README.md#5b-passport-peer-stack-opt-in--a2a--signed-h
 
 ## Stock Hermes (vanilla install)
 
-Keep [upstream Hermes](https://github.com/NousResearch/hermes-agent). You only
-need a checkout (or release) of these packages — not the Podman app layout.
+Keep [upstream Hermes](https://github.com/NousResearch/hermes-agent). From this
+checkout (or a clone of `main`):
 
 ```bash
 export HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
-# idcp prefers IDENTYCLAW_HOME when set:
-# export IDENTYCLAW_HOME="$HERMES_HOME"
+./install.sh          # Tier 1: idcp + skill
+./install.sh --peer   # Tier 2: + a2a-platform + identyclaw-webhooks
 ```
+
+You only need this packages tree — not the Podman app layout.
 
 | Path | Role |
 |------|------|
@@ -55,6 +57,7 @@ export HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 ### Tier 1 — Call federated peers (usual need)
 
 Passport as *client*. No sidecar, no A2A/hooks plugins, no `WEBHOOK_SECRET`.
+Prefer `./install.sh` (above). Manual equivalent:
 
 ```bash
 cd packages/hermes-identyclaw-auth
@@ -80,8 +83,11 @@ Package detail: [`hermes-identyclaw-auth/README.md`](hermes-identyclaw-auth/READ
 
 ### Tier 2 — Be a Passport peer (optional)
 
-Only if other Passport agents should A2A or RODiT-wake this Hermes. Requires
-Tier 1, then:
+Only if other Passport agents should A2A or RODiT-wake this Hermes. Prefer
+`./install.sh --peer`. That copies plugins into `$HERMES_HOME/plugins/` and
+appends enablement to `config.yaml`.
+
+Alternatively, Hermes can clone the plugin subdirs itself:
 
 ```bash
 hermes plugins install discernible-io/hermes-agents/packages/hermes-identyclaw-a2a
@@ -101,7 +107,7 @@ cp -a "$REPO/packages/hermes-identyclaw-webhooks/." \
   "$HERMES_HOME/plugins/identyclaw-webhooks/"
 ```
 
-Enable plugins in `$HERMES_HOME/config.yaml`:
+Enable plugins in `$HERMES_HOME/config.yaml` (also done by `./install.sh --peer`):
 
 ```yaml
 plugins:

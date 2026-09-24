@@ -6,6 +6,7 @@ This repository is not a Hermes fork. The agent runtime is the published image `
 
 | Piece | Role |
 |---|---|
+| [`install.sh`](install.sh) | One-shot installer into `$HERMES_HOME` for an existing Hermes agent |
 | [`packages/hermes-identyclaw-auth`](packages/hermes-identyclaw-auth/) | `idcp` CLI and localhost RODiT auth sidecar |
 | [`packages/hermes-identyclaw-a2a`](packages/hermes-identyclaw-a2a/) | Platform plugin `a2a-platform` — Passport JWT over bundled A2A |
 | [`packages/hermes-identyclaw-webhooks`](packages/hermes-identyclaw-webhooks/) | Platform plugin `identyclaw-webhooks` — RODiT `/hooks/*` |
@@ -13,35 +14,27 @@ This repository is not a Hermes fork. The agent runtime is the published image `
 
 Mint a Passport once at IdentyClaw home. Peers that implement the login contract (for example [api.lastcradle.io](https://api.lastcradle.io)) then issue their own JWT after a key-possession proof. No vendor API key. A home JWT is not accepted at a peer.
 
-## Vanilla Hermes
+## Existing Hermes agent
 
-Install [Hermes](https://hermes-agent.nousresearch.com/) the usual way, then follow [`packages/README.md`](packages/README.md).
+```bash
+git clone https://github.com/discernible-io/hermes-agents.git
+cd hermes-agents
+./install.sh              # Tier 1: idcp + skill
+./install.sh --peer       # Tier 2: also A2A overlay + signed /hooks/*
+```
 
-Tier 1 (call federated peers) is the auth package plus the skill. Tier 2 (be a peer) installs the two plugins:
+`HERMES_HOME` defaults to `~/.hermes`. Override with `HERMES_HOME=/path ./install.sh --peer`.
+
+Then put `$HERMES_HOME/bin` on PATH, run `idcp enroll` → mint at [purchase.identyclaw.com](https://purchase.identyclaw.com) → `idcp ensure_session`. For Tier 2, start the auth sidecar and restart the Hermes gateway. Details: [`packages/README.md`](packages/README.md).
+
+You can also install only the Python plugins via Hermes:
 
 ```bash
 hermes plugins install discernible-io/hermes-agents/packages/hermes-identyclaw-a2a
 hermes plugins install discernible-io/hermes-agents/packages/hermes-identyclaw-webhooks
 ```
 
-Enable them in `$HERMES_HOME/config.yaml`. `a2a-platform` replaces bundled A2A tools, so it needs `tools.override` (`allow_tool_override: true` on older Hermes):
-
-```yaml
-plugins:
-  enabled:
-    - a2a-platform
-    - identyclaw-webhooks
-  entries:
-    a2a-platform:
-      enabled: true
-      allow_tool_override: true
-      granted_capabilities:
-        - tools.override
-    identyclaw-webhooks:
-      enabled: true
-```
-
-HMAC `/webhooks/{route}` is unchanged. Signed ingress is `/hooks/wake` and `/hooks/agent`.
+`a2a-platform` replaces bundled A2A tools, so it needs `tools.override` (`allow_tool_override: true` on older Hermes). HMAC `/webhooks/{route}` is unchanged; signed ingress is `/hooks/wake` and `/hooks/agent`.
 
 ## Podman on this host
 

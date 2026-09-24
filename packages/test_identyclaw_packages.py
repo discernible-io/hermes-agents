@@ -94,6 +94,16 @@ def test_deploy_idcp_is_symlink_to_auth_package():
     assert target.name == "hermes-identyclaw-auth"
 
 
+def test_install_script_present():
+    script = REPO / "install.sh"
+    assert script.is_file()
+    text = script.read_text()
+    assert "HERMES_HOME" in text
+    assert "--peer" in text
+    assert "a2a-platform" in text
+    assert "identyclaw-webhooks" in text
+
+
 def test_packages_layout():
     for name in (
         "hermes-identyclaw-auth",
