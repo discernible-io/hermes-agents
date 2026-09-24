@@ -168,12 +168,25 @@ enable_peer_config() {
 YAML
     echo "Created stub ${HERMES_HOME}/config.yaml"
   fi
+  # Prefer the Podman wrapper merge helper when this umbrella checkout has it.
+  local merge_py="${ROOT}/deploy/scripts/merge-identyclaw-peer-config.py"
+  if [[ -f "$merge_py" ]]; then
+    python3 "$merge_py" "$HERMES_HOME"
+    return 0
+  fi
   python3 - "$HERMES_HOME" <<'PY'
 import pathlib, sys
 home = pathlib.Path(sys.argv[1])
 cfg = home / "config.yaml"
 text = cfg.read_text() if cfg.is_file() else ""
 marker = "# identyclaw-peer (managed by install.sh)"
+if marker in text or "identyclaw-webhooks" in text:
+    print(f"{cfg} already has IdentyClaw peer settings (left unchanged)")
+    raise SystemExit(0)
+# Only append when there is no existing plugins: key (avoid YAML last-wins wipe).
+if "\nplugins:" in text or text.startswith("plugins:"):
+    print(f"{cfg} already has plugins: — enable a2a-platform + identyclaw-webhooks manually", file=sys.stderr)
+    raise SystemExit(0)
 block = f"""
 {marker}
 plugins:
@@ -194,12 +207,8 @@ platforms:
   identyclaw_hooks:
     enabled: true
 """
-if marker in text:
-    print(f"{cfg} already has install.sh marker (left unchanged)")
-else:
-    cfg.write_text(text.rstrip() + "\n" + block + "\n")
-    print(f"Appended IdentyClaw peer enablement to {cfg}")
-    print("Review/merge if you already had a plugins: or platforms: section.")
+cfg.write_text(text.rstrip() + "\n" + block + "\n")
+print(f"Appended IdentyClaw peer enablement to {cfg}")
 PY
 }
 

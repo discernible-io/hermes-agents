@@ -261,11 +261,29 @@ cmd_start_pod() {
     echo "Note: TELEGRAM_WEBHOOK_PORT set to 8643 (nginx listens on ${HERMES_INGRESS_PORT})" >&2
   fi
 
+  # Optional Passport mint-time aliases (e.g. HERMES_EXTRA_INGRESS_PORTS=7443 →
+  # host:7443 → container HERMES_INGRESS_PORT). Same nginx TLS listener.
+  local pod_ports=(
+    -p "${HERMES_INGRESS_PORT}:${HERMES_INGRESS_PORT}"
+    -p "${HERMES_API_PORT}:8642"
+  )
+  local extras extra_port
+  extras="${HERMES_EXTRA_INGRESS_PORTS:-}"
+  extras="${extras//,/ }"
+  for extra_port in $extras; do
+    extra_port="${extra_port//[[:space:]]/}"
+    [[ -n "$extra_port" ]] || continue
+    if [[ "$extra_port" == "${HERMES_INGRESS_PORT}" || "$extra_port" == "8642" ]]; then
+      continue
+    fi
+    pod_ports+=(-p "${extra_port}:${HERMES_INGRESS_PORT}")
+    echo "Extra ingress publish: host :${extra_port} → nginx :${HERMES_INGRESS_PORT}"
+  done
+
   echo "Creating pod ${HERMES_POD} (ingress ${HERMES_INGRESS_PORT}, API ${HERMES_API_PORT}) ..."
   podman pod create \
     --name "$HERMES_POD" \
-    -p "${HERMES_INGRESS_PORT}:${HERMES_INGRESS_PORT}" \
-    -p "${HERMES_API_PORT}:8642"
+    "${pod_ports[@]}"
 
   hermes_gateway_run_args args
   args+=(--pod "$HERMES_POD")
@@ -781,50 +799,14 @@ cmd_identyclaw_peer_install() {
   # Refresh container-safe /opt/idcp wrappers (never bake a host packages path).
   ensure_idcp_layout
 
-  # Enable plugins in config.yaml (opt-in; allow tool override for a2a overlay)
+  # Enable plugins in config.yaml (opt-in). Merge into existing keys — never append a
+  # second top-level plugins:/platforms: block (YAML last-wins would wipe Telegram).
   if command -v python3 >/dev/null 2>&1; then
-    local py_script
-    py_script="$(cat <<'PY'
-import pathlib, sys
-app = pathlib.Path(sys.argv[1])
-cfg = app / "config.yaml"
-if not cfg.is_file():
-    print(f"skip config enablement — missing {cfg}")
-    raise SystemExit(0)
-text = cfg.read_text()
-marker = "# identyclaw-peer (managed by hermes.sh identyclaw-peer-install)"
-block = f"""
-{marker}
-plugins:
-  enabled:
-    - a2a-platform
-    - identyclaw-webhooks
-  entries:
-    a2a-platform:
-      enabled: true
-      allow_tool_override: true
-      granted_capabilities:
-        - tools.override
-    identyclaw-webhooks:
-      enabled: true
-platforms:
-  a2a:
-    enabled: true
-  identyclaw_hooks:
-    enabled: true
-"""
-if marker in text:
-    print("config.yaml already has identyclaw-peer marker (leaving block; merge manually if needed)")
-else:
-    cfg.write_text(text.rstrip() + "\n" + block + "\n")
-    print(f"Appended identyclaw-peer plugin enablement to {cfg}")
-    print("Review/merge if you already had a plugins: section.")
-PY
-)"
+    local merge_py="${HERMES_ROOT}/scripts/merge-identyclaw-peer-config.py"
     if [[ -w "$app" ]]; then
-      python3 -c "$py_script" "$app"
+      python3 "$merge_py" "$app"
     else
-      podman unshare python3 -c "$py_script" "$app"
+      podman unshare python3 "$merge_py" "$app"
     fi
   fi
 
