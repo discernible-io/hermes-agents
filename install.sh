@@ -4,7 +4,7 @@
 # Plugin sources live in sibling checkouts (default) or GitHub clones:
 #   ../hermes-identyclaw-auth
 #   ../hermes-identyclaw-a2a
-#   ../hermes-identyclaw-webhooks
+#   ../hermes-identyclaw-webhook  (local sibling may also be …-webhooks)
 #
 # Usage:
 #   ./install.sh                 # Tier 1: idcp + skill (call federated peers)
@@ -27,7 +27,7 @@ FETCH=0
 # Override any path with IDENTYCLAW_AUTH_DIR / IDENTYCLAW_A2A_DIR / IDENTYCLAW_WEBHOOKS_DIR.
 AUTH_REPO_URL="${IDENTYCLAW_AUTH_REPO:-https://github.com/discernible-io/hermes-identyclaw-auth.git}"
 A2A_REPO_URL="${IDENTYCLAW_A2A_REPO:-https://github.com/discernible-io/hermes-identyclaw-a2a.git}"
-WEBHOOKS_REPO_URL="${IDENTYCLAW_WEBHOOKS_REPO:-https://github.com/discernible-io/hermes-identyclaw-webhooks.git}"
+WEBHOOKS_REPO_URL="${IDENTYCLAW_WEBHOOKS_REPO:-https://github.com/discernible-io/hermes-identyclaw-webhook.git}"
 
 usage() {
   sed -n '2,16p' "$0" | sed 's/^# \?//'
@@ -45,7 +45,7 @@ Environment:
   IDENTYCLAW_HOME          Optional override preferred by idcp for secrets layout
   IDENTYCLAW_AUTH_DIR      Path to hermes-identyclaw-auth checkout
   IDENTYCLAW_A2A_DIR       Path to hermes-identyclaw-a2a checkout
-  IDENTYCLAW_WEBHOOKS_DIR  Path to hermes-identyclaw-webhooks checkout
+  IDENTYCLAW_WEBHOOKS_DIR  Path to hermes-identyclaw-webhook checkout
 EOF
 }
 
@@ -72,17 +72,23 @@ require_cmds() {
 }
 
 resolve_plugin_dir() {
-  # $1 = env override value (may be empty), $2 = sibling dirname, $3 = git URL
-  local override="$1" sibling_name="$2" url="$3" sibling
+  # Usage: resolve_plugin_dir <override> <git-url> <sibling-name> [alt-sibling-name...]
+  local override="$1" url="$2"
+  shift 2
+  local names=("$@") name sibling tried=()
   if [[ -n "$override" ]]; then
     printf '%s' "$override"
     return 0
   fi
-  sibling="${PARENT}/${sibling_name}"
-  if [[ -d "$sibling" ]]; then
-    printf '%s' "$sibling"
-    return 0
-  fi
+  for name in "${names[@]}"; do
+    sibling="${PARENT}/${name}"
+    tried+=("$sibling")
+    if [[ -d "$sibling" ]]; then
+      printf '%s' "$sibling"
+      return 0
+    fi
+  done
+  sibling="${PARENT}/$(basename "${url%.git}")"
   if [[ "$FETCH" == 1 ]]; then
     command -v git >/dev/null 2>&1 || die "git is required for --fetch"
     echo "Cloning ${url} → ${sibling} ..." >&2
@@ -90,10 +96,10 @@ resolve_plugin_dir() {
     printf '%s' "$sibling"
     return 0
   fi
-  die "missing ${sibling} — clone it next to hermes-agents, set IDENTYCLAW_*_DIR, or pass --fetch"
+  die "missing plugin checkout — tried: ${tried[*]} (set IDENTYCLAW_*_DIR or pass --fetch)"
 }
 
-pkg_auth="$(resolve_plugin_dir "${IDENTYCLAW_AUTH_DIR:-}" hermes-identyclaw-auth "$AUTH_REPO_URL")"
+pkg_auth="$(resolve_plugin_dir "${IDENTYCLAW_AUTH_DIR:-}" "$AUTH_REPO_URL" hermes-identyclaw-auth)"
 skill_src=""
 if [[ -d "${pkg_auth}/skills/identyclaw" ]]; then
   skill_src="${pkg_auth}/skills/identyclaw"
@@ -106,8 +112,10 @@ fi
 pkg_a2a=""
 pkg_hooks=""
 if [[ "$MODE" == peer ]]; then
-  pkg_a2a="$(resolve_plugin_dir "${IDENTYCLAW_A2A_DIR:-}" hermes-identyclaw-a2a "$A2A_REPO_URL")"
-  pkg_hooks="$(resolve_plugin_dir "${IDENTYCLAW_WEBHOOKS_DIR:-}" hermes-identyclaw-webhooks "$WEBHOOKS_REPO_URL")"
+  pkg_a2a="$(resolve_plugin_dir "${IDENTYCLAW_A2A_DIR:-}" "$A2A_REPO_URL" hermes-identyclaw-a2a)"
+  # GitHub repo is singular (-webhook); local sibling may still be -webhooks.
+  pkg_hooks="$(resolve_plugin_dir "${IDENTYCLAW_WEBHOOKS_DIR:-}" "$WEBHOOKS_REPO_URL" \
+    hermes-identyclaw-webhook hermes-identyclaw-webhooks)"
 fi
 
 install_auth_and_skill() {

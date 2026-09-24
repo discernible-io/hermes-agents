@@ -136,8 +136,8 @@ Practitioners who only want Passport on stock Hermes can copy `idcp/` + the skil
 - [ ] Align Himalaya and IdentyClaw install UX (same prompts: skill path, bin shim, volumes, “recreate gateway”).
 - [x] This repo is the Podman + install.sh umbrella. Plugins live in sibling repos (`hermes-identyclaw-*`).
 - [x] Publishable packages extracted to sibling dirs (auth / a2a / webhooks).
-- [ ] Push sibling repos to GitHub and wire `./install.sh --fetch`.
-- [ ] Optional: Nous plugin-catalog entries once repos are public + SHA-pinned.
+- [x] Push sibling repos to GitHub (`hermes-identyclaw-auth`, `-a2a`, `-webhook`).
+- [ ] Optional: Nous plugin-catalog entries once SHA-pinned.
 - [ ] If extracting: pin versions, smoke-test enroll + peer A2A with OpenClaw.
 - [x] Draft / file Nous feature request (generic hooks above) → [PR #83805](https://github.com/NousResearch/hermes-agent/pull/83805).
 - [ ] After #83805 merges: drop redundant PATH / `docker_volumes` patches where upstream covers `bin/`.

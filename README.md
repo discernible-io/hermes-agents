@@ -2,38 +2,36 @@
 
 Umbrella repo: rootless Podman operator (`deploy/`) plus `install.sh` for an
 existing [Hermes Agent](https://github.com/NousResearch/hermes-agent). Passport
-plugins live in **sibling** repositories — not in this tree.
+plugins are public sibling repositories.
 
-| Piece | Location |
+| Piece | Repo |
 |---|---|
 | [`install.sh`](install.sh) | Install into `$HERMES_HOME` |
 | [`deploy/`](deploy/README.md) | Podman operator (`./hermes.sh`) |
-| Auth / `idcp` | [`../hermes-identyclaw-auth`](../hermes-identyclaw-auth/) |
-| A2A plugin | [`../hermes-identyclaw-a2a`](../hermes-identyclaw-a2a/) |
-| Webhooks plugin | [`../hermes-identyclaw-webhooks`](../hermes-identyclaw-webhooks/) |
+| Auth / `idcp` | [discernible-io/hermes-identyclaw-auth](https://github.com/discernible-io/hermes-identyclaw-auth) |
+| A2A plugin | [discernible-io/hermes-identyclaw-a2a](https://github.com/discernible-io/hermes-identyclaw-a2a) |
+| Webhooks plugin | [discernible-io/hermes-identyclaw-webhook](https://github.com/discernible-io/hermes-identyclaw-webhook) |
 
 ## Existing Hermes agent
 
 ```bash
-# siblings next to this repo (or: ./install.sh --fetch … once GitHub repos exist)
 git clone https://github.com/discernible-io/hermes-agents.git
-# + hermes-identyclaw-auth / -a2a / -webhooks as siblings
-
 cd hermes-agents
-./install.sh              # Tier 1: idcp + skill
-./install.sh --peer       # Tier 2: + a2a-platform + signed /hooks/*
+./install.sh --fetch              # Tier 1: clone auth + install idcp/skill
+./install.sh --fetch --peer       # Tier 2: also A2A + signed /hooks/*
 ```
 
-`HERMES_HOME` defaults to `~/.hermes`. Then put `$HERMES_HOME/bin` on PATH, run
-`idcp enroll` → mint at [purchase.identyclaw.com](https://purchase.identyclaw.com)
-→ `idcp ensure_session`. Tier 2 also needs the auth sidecar and a gateway restart.
-
-Plugins alone (after the sibling repos are on GitHub):
+Or install the Python plugins directly:
 
 ```bash
-hermes plugins install discernible-io/hermes-identyclaw-a2a
-hermes plugins install discernible-io/hermes-identyclaw-webhooks
+hermes plugins install discernible-io/hermes-identyclaw-a2a --enable
+hermes plugins install discernible-io/hermes-identyclaw-webhook --enable
+# grant tools.override for a2a-platform when prompted
 ```
+
+`HERMES_HOME` defaults to `~/.hermes`. Put `$HERMES_HOME/bin` on PATH, then
+`idcp enroll` → mint at [purchase.identyclaw.com](https://purchase.identyclaw.com)
+→ `idcp ensure_session`. Tier 2 also needs the auth sidecar and a gateway restart.
 
 ## Podman on this host
 

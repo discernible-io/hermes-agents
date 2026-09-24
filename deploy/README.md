@@ -12,7 +12,7 @@ can sync this checkout without carrying runtime state.
 | `~/hermes-agents/` | Umbrella (Podman wrapper + install.sh) |
 | `~/hermes-identyclaw-auth/` | Sibling: `idcp` + auth sidecar (`deploy/idcp` → symlink) |
 | `~/hermes-identyclaw-a2a/` | Sibling: A2A Passport plugin |
-| `~/hermes-identyclaw-webhooks/` | Sibling: RODiT `/hooks/*` plugin |
+| `~/hermes-identyclaw-webhooks/` or `~/hermes-identyclaw-webhook/` | Sibling: RODiT `/hooks/*` plugin |
 | `~/hermes-agents/deploy/` | Podman scripts, `idcp/`, nginx sidecar, IdentyClaw skill |
 | `~/hermes-agents-app/` | Runtime home (mounted at `/opt/data`) — `env.local`, `.env`, `config.yaml`, `skills/`, `memories/`, `sessions/` |
 

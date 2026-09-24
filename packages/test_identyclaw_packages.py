@@ -14,12 +14,12 @@ def _plugin(name: str) -> Path:
 
 
 def test_sibling_plugin_checkouts_exist():
-    for name in (
-        "hermes-identyclaw-auth",
-        "hermes-identyclaw-a2a",
-        "hermes-identyclaw-webhooks",
-    ):
-        assert _plugin(name).is_dir(), f"expected sibling checkout {_plugin(name)}"
+    assert _plugin("hermes-identyclaw-auth").is_dir()
+    assert _plugin("hermes-identyclaw-a2a").is_dir()
+    hooks = _plugin("hermes-identyclaw-webhook")
+    if not hooks.is_dir():
+        hooks = _plugin("hermes-identyclaw-webhooks")
+    assert hooks.is_dir(), "expected sibling hermes-identyclaw-webhook(s)"
 
 
 def test_a2a_manifest_overrides_bundled_platform():
@@ -29,7 +29,10 @@ def test_a2a_manifest_overrides_bundled_platform():
 
 
 def test_webhooks_stay_off_hmac_routes():
-    text = (_plugin("hermes-identyclaw-webhooks") / "plugin.yaml").read_text()
+    hooks = _plugin("hermes-identyclaw-webhook")
+    if not hooks.is_dir():
+        hooks = _plugin("hermes-identyclaw-webhooks")
+    text = (hooks / "plugin.yaml").read_text()
     assert "HMAC" in text
     assert "/webhooks/{route}" in text
 

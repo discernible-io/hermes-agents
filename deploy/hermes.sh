@@ -84,7 +84,14 @@ identyclaw_webhooks_pkg() {
     printf '%s' "$IDENTYCLAW_WEBHOOKS_DIR"
     return 0
   fi
-  printf '%s' "$(identyclaw_plugin_parent)/hermes-identyclaw-webhooks"
+  local parent
+  parent="$(identyclaw_plugin_parent)"
+  # GitHub repo is singular; local sibling may still be plural.
+  if [[ -d "${parent}/hermes-identyclaw-webhook" ]]; then
+    printf '%s' "${parent}/hermes-identyclaw-webhook"
+  else
+    printf '%s' "${parent}/hermes-identyclaw-webhooks"
+  fi
 }
 
 identyclaw_auth_container() {
