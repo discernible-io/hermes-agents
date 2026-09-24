@@ -58,8 +58,33 @@ identyclaw_peer_snapshot() {
   fi
 }
 
+identyclaw_plugin_parent() {
+  # Sibling checkouts live next to hermes-agents by default.
+  printf '%s' "$(cd "${HERMES_REPO}/.." && pwd)"
+}
+
 identyclaw_auth_pkg() {
-  printf '%s' "${HERMES_REPO}/packages/hermes-identyclaw-auth"
+  if [[ -n "${IDENTYCLAW_AUTH_DIR:-}" ]]; then
+    printf '%s' "$IDENTYCLAW_AUTH_DIR"
+    return 0
+  fi
+  printf '%s' "$(identyclaw_plugin_parent)/hermes-identyclaw-auth"
+}
+
+identyclaw_a2a_pkg() {
+  if [[ -n "${IDENTYCLAW_A2A_DIR:-}" ]]; then
+    printf '%s' "$IDENTYCLAW_A2A_DIR"
+    return 0
+  fi
+  printf '%s' "$(identyclaw_plugin_parent)/hermes-identyclaw-a2a"
+}
+
+identyclaw_webhooks_pkg() {
+  if [[ -n "${IDENTYCLAW_WEBHOOKS_DIR:-}" ]]; then
+    printf '%s' "$IDENTYCLAW_WEBHOOKS_DIR"
+    return 0
+  fi
+  printf '%s' "$(identyclaw_plugin_parent)/hermes-identyclaw-webhooks"
 }
 
 identyclaw_auth_container() {
@@ -688,8 +713,8 @@ cmd_identyclaw_peer_install() {
   local app pkg_auth pkg_a2a pkg_hooks plugins_dir
   app="$(hermes_app_dir)"
   pkg_auth="$(identyclaw_auth_pkg)"
-  pkg_a2a="${HERMES_REPO}/packages/hermes-identyclaw-a2a"
-  pkg_hooks="${HERMES_REPO}/packages/hermes-identyclaw-webhooks"
+  pkg_a2a="$(identyclaw_a2a_pkg)"
+  pkg_hooks="$(identyclaw_webhooks_pkg)"
   plugins_dir="${app}/plugins"
 
   if ! command -v npm >/dev/null 2>&1 || ! command -v node >/dev/null 2>&1; then
@@ -697,7 +722,11 @@ cmd_identyclaw_peer_install() {
     exit 1
   fi
   [[ -d "$pkg_auth" && -d "$pkg_a2a" && -d "$pkg_hooks" ]] || {
-    echo "missing packages under ${HERMES_REPO}/packages/" >&2
+    echo "missing IdentyClaw plugin checkouts:" >&2
+    echo "  auth     → ${pkg_auth}" >&2
+    echo "  a2a      → ${pkg_a2a}" >&2
+    echo "  webhooks → ${pkg_hooks}" >&2
+    echo "Clone them next to hermes-agents, or set IDENTYCLAW_AUTH_DIR / IDENTYCLAW_A2A_DIR / IDENTYCLAW_WEBHOOKS_DIR." >&2
     exit 1
   }
 

@@ -18,8 +18,8 @@ Stock Nous Hermes does **not** ship IdentyClaw Passport / RODiT. This repo alrea
 
 | Layer | Role | Location |
 |-------|------|----------|
-| **CLI** | Enroll, JWT session, HOLA, API calls | Synced `idcp/` → mounted `/opt/idcp` |
-| **Skill** | Agent instructions: call `idcp`, never invent crypto / paste JWTs | `skills/identyclaw/SKILL.md` → copied to `hermes-agents-app/skills/identity/identyclaw/` |
+| **CLI** | Enroll, JWT session, HOLA, API calls | Sibling `hermes-identyclaw-auth` via `deploy/idcp` → `/opt/idcp` |
+| **Skill** | Agent instructions: call `idcp`, never invent crypto / paste JWTs | `hermes-identyclaw-auth/skills/identyclaw/` → `$HERMES_HOME/skills/identity/identyclaw/` |
 | **Secrets** | NEAR keys + JWT cache | `hermes-agents-app/secrets/` only (never in image or git) |
 
 Code stays in the synced repo; runtime identity stays in the sibling app dir (`HERMES_APP_DIR`).
@@ -134,8 +134,10 @@ Practitioners who only want Passport on stock Hermes can copy `idcp/` + the skil
 - [x] Publishable packages under `packages/` (auth sidecar + A2A overlay + `/hooks/*`).
 - [x] Opt-in `./hermes.sh identyclaw-peer-install` (does not change stock HMAC webhooks).
 - [ ] Align Himalaya and IdentyClaw install UX (same prompts: skill path, bin shim, volumes, “recreate gateway”).
-- [x] This repo is the plugin + Podman overlay. Hermes core stays upstream; do not merge `NousResearch/hermes-agent` into this tree.
-- [ ] Decide: extract standalone GitHub repos vs monorepo `packages/` only.
+- [x] This repo is the Podman + install.sh umbrella. Plugins live in sibling repos (`hermes-identyclaw-*`).
+- [x] Publishable packages extracted to sibling dirs (auth / a2a / webhooks).
+- [ ] Push sibling repos to GitHub and wire `./install.sh --fetch`.
+- [ ] Optional: Nous plugin-catalog entries once repos are public + SHA-pinned.
 - [ ] If extracting: pin versions, smoke-test enroll + peer A2A with OpenClaw.
 - [x] Draft / file Nous feature request (generic hooks above) → [PR #83805](https://github.com/NousResearch/hermes-agent/pull/83805).
 - [ ] After #83805 merges: drop redundant PATH / `docker_volumes` patches where upstream covers `bin/`.

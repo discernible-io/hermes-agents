@@ -1,34 +1,51 @@
 #!/usr/bin/env bash
 # Install IdentyClaw into an existing Hermes home (vanilla Hermes, not this Podman wrapper).
 #
+# Plugin sources live in sibling checkouts (default) or GitHub clones:
+#   ../hermes-identyclaw-auth
+#   ../hermes-identyclaw-a2a
+#   ../hermes-identyclaw-webhooks
+#
 # Usage:
 #   ./install.sh                 # Tier 1: idcp + skill (call federated peers)
 #   ./install.sh --peer          # Tier 1 + A2A overlay + signed /hooks/* plugins
 #   ./install.sh --client        # same as default Tier 1
 #   HERMES_HOME=/path ./install.sh --peer
+#   ./install.sh --fetch --peer  # clone missing siblings from GitHub first
 #
 # Requires: node + npm (Node ≥ 22.19). Does not start Hermes or the auth sidecar.
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PARENT="$(cd "${ROOT}/.." && pwd)"
 HERMES_HOME="${HERMES_HOME:-${IDENTYCLAW_HOME:-$HOME/.hermes}}"
 MODE=client
 ENABLE_CONFIG=1
+FETCH=0
+
+# Override any path with IDENTYCLAW_AUTH_DIR / IDENTYCLAW_A2A_DIR / IDENTYCLAW_WEBHOOKS_DIR.
+AUTH_REPO_URL="${IDENTYCLAW_AUTH_REPO:-https://github.com/discernible-io/hermes-identyclaw-auth.git}"
+A2A_REPO_URL="${IDENTYCLAW_A2A_REPO:-https://github.com/discernible-io/hermes-identyclaw-a2a.git}"
+WEBHOOKS_REPO_URL="${IDENTYCLAW_WEBHOOKS_REPO:-https://github.com/discernible-io/hermes-identyclaw-webhooks.git}"
 
 usage() {
-  sed -n '2,12p' "$0" | sed 's/^# \?//'
+  sed -n '2,16p' "$0" | sed 's/^# \?//'
   cat <<EOF
 
 Options:
   --client          Install idcp CLI + skill only (default)
   --peer            Also install a2a-platform + identyclaw-webhooks plugins
+  --fetch           Clone missing sibling plugin repos from GitHub into ${PARENT}/
   --no-enable       Install plugins/files but do not edit config.yaml
   -h, --help        Show this help
 
 Environment:
-  HERMES_HOME       Target Hermes profile (default: ~/.hermes)
-  IDENTYCLAW_HOME   Optional override preferred by idcp for secrets layout
+  HERMES_HOME              Target Hermes profile (default: ~/.hermes)
+  IDENTYCLAW_HOME          Optional override preferred by idcp for secrets layout
+  IDENTYCLAW_AUTH_DIR      Path to hermes-identyclaw-auth checkout
+  IDENTYCLAW_A2A_DIR       Path to hermes-identyclaw-a2a checkout
+  IDENTYCLAW_WEBHOOKS_DIR  Path to hermes-identyclaw-webhooks checkout
 EOF
 }
 
@@ -36,6 +53,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --client) MODE=client; shift ;;
     --peer) MODE=peer; shift ;;
+    --fetch) FETCH=1; shift ;;
     --no-enable) ENABLE_CONFIG=0; shift ;;
     -h|--help) usage; exit 0 ;;
     *)
@@ -46,17 +64,51 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-pkg_auth="${ROOT}/packages/hermes-identyclaw-auth"
-pkg_a2a="${ROOT}/packages/hermes-identyclaw-a2a"
-pkg_hooks="${ROOT}/packages/hermes-identyclaw-webhooks"
-skill_src="${ROOT}/deploy/skills/identyclaw"
-
 die() { echo "error: $*" >&2; exit 1; }
 
 require_cmds() {
   command -v node >/dev/null 2>&1 || die "node is required (Node ≥ 22.19)"
   command -v npm >/dev/null 2>&1 || die "npm is required"
 }
+
+resolve_plugin_dir() {
+  # $1 = env override value (may be empty), $2 = sibling dirname, $3 = git URL
+  local override="$1" sibling_name="$2" url="$3" sibling
+  if [[ -n "$override" ]]; then
+    printf '%s' "$override"
+    return 0
+  fi
+  sibling="${PARENT}/${sibling_name}"
+  if [[ -d "$sibling" ]]; then
+    printf '%s' "$sibling"
+    return 0
+  fi
+  if [[ "$FETCH" == 1 ]]; then
+    command -v git >/dev/null 2>&1 || die "git is required for --fetch"
+    echo "Cloning ${url} → ${sibling} ..." >&2
+    git clone --depth 1 "$url" "$sibling"
+    printf '%s' "$sibling"
+    return 0
+  fi
+  die "missing ${sibling} — clone it next to hermes-agents, set IDENTYCLAW_*_DIR, or pass --fetch"
+}
+
+pkg_auth="$(resolve_plugin_dir "${IDENTYCLAW_AUTH_DIR:-}" hermes-identyclaw-auth "$AUTH_REPO_URL")"
+skill_src=""
+if [[ -d "${pkg_auth}/skills/identyclaw" ]]; then
+  skill_src="${pkg_auth}/skills/identyclaw"
+elif [[ -d "${pkg_auth}/skills/identity/identyclaw" ]]; then
+  skill_src="${pkg_auth}/skills/identity/identyclaw"
+else
+  die "missing skill under ${pkg_auth}/skills/identyclaw"
+fi
+
+pkg_a2a=""
+pkg_hooks=""
+if [[ "$MODE" == peer ]]; then
+  pkg_a2a="$(resolve_plugin_dir "${IDENTYCLAW_A2A_DIR:-}" hermes-identyclaw-a2a "$A2A_REPO_URL")"
+  pkg_hooks="$(resolve_plugin_dir "${IDENTYCLAW_WEBHOOKS_DIR:-}" hermes-identyclaw-webhooks "$WEBHOOKS_REPO_URL")"
+fi
 
 install_auth_and_skill() {
   [[ -d "$pkg_auth" ]] || die "missing ${pkg_auth}"
@@ -74,25 +126,21 @@ install_auth_and_skill() {
   chmod +x "${pkg_auth}/bin/idcp.mjs" "${pkg_auth}/bin/sidecar.mjs" 2>/dev/null || true
 
   cp -a "${skill_src}/." "${HERMES_HOME}/skills/identity/identyclaw/"
-
-  # Prefer this Hermes home for idcp secrets unless the operator already set one.
-  if [[ -z "${IDENTYCLAW_HOME:-}" ]]; then
-    if [[ -f "${HERMES_HOME}/.env" ]] || [[ -f "${HERMES_HOME}/config.yaml" ]]; then
-      # Soft hint file for operators; idcp also honors HERMES_HOME.
-      :
-    fi
-  fi
 }
 
 install_peer_plugins() {
-  [[ -d "$pkg_a2a" && -d "$pkg_hooks" ]] || die "missing peer packages under ${ROOT}/packages/"
+  [[ -d "$pkg_a2a" && -d "$pkg_hooks" ]] || die "missing peer plugin checkouts"
   local plugins_dir="${HERMES_HOME}/plugins"
   mkdir -p "$plugins_dir"
   rm -rf "${plugins_dir}/a2a-platform" "${plugins_dir}/identyclaw-webhooks"
-  cp -a "$pkg_a2a" "${plugins_dir}/a2a-platform"
-  cp -a "$pkg_hooks" "${plugins_dir}/identyclaw-webhooks"
+  # Copy plugin files only (skip local __pycache__).
+  mkdir -p "${plugins_dir}/a2a-platform" "${plugins_dir}/identyclaw-webhooks"
+  cp -a "$pkg_a2a"/. "${plugins_dir}/a2a-platform/"
+  cp -a "$pkg_hooks"/. "${plugins_dir}/identyclaw-webhooks/"
   rm -rf "${plugins_dir}/a2a-platform/__pycache__" \
-    "${plugins_dir}/identyclaw-webhooks/__pycache__"
+    "${plugins_dir}/identyclaw-webhooks/__pycache__" \
+    "${plugins_dir}/a2a-platform/.git" \
+    "${plugins_dir}/identyclaw-webhooks/.git"
   echo "Installed plugins → ${plugins_dir}/a2a-platform , identyclaw-webhooks"
 }
 
@@ -150,6 +198,7 @@ PY
 print_next_steps() {
   echo ""
   echo "Installed into HERMES_HOME=${HERMES_HOME}"
+  echo "  auth src  → ${pkg_auth}"
   echo "  bin/idcp  → ${HERMES_HOME}/bin/idcp"
   echo "  skill     → ${HERMES_HOME}/skills/identity/identyclaw/"
   if [[ "$MODE" == peer ]]; then

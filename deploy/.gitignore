@@ -35,10 +35,8 @@ nginx/nginx.conf
 
 # --- Node (idcp deps — run ./hermes.sh idcp-install per host) ---
 idcp/node_modules/
-idcp/vendor/hola-client/node_modules/
-
-# packages/hermes-identyclaw-auth (symlink target of idcp/)
-../packages/*/node_modules/
+# idcp → ../../hermes-identyclaw-auth (sibling plugin repo)
+../hermes-identyclaw-auth/node_modules/
 
 # --- Logs & scratch ---
 *.log

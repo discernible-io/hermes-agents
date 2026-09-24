@@ -354,12 +354,15 @@ ensure_idcp_layout() {
     "$app/skills/identity/identyclaw" \
     "$app/bin" 2>/dev/null || true
   chmod 700 "$app/secrets" "$app/secrets/near-credentials" "$app/secrets/identyclaw" 2>/dev/null || true
-  if [[ -f "$HERMES_ROOT/skills/identyclaw/SKILL.md" ]]; then
+  if [[ -f "$HERMES_ROOT/idcp/skills/identyclaw/SKILL.md" ]]; then
+    cp -a "$HERMES_ROOT/idcp/skills/identyclaw/SKILL.md" "$app/skills/identity/identyclaw/SKILL.md" 2>/dev/null || true
+  elif [[ -f "$HERMES_ROOT/skills/identyclaw/SKILL.md" ]]; then
+    # Legacy in-tree path (pre sibling-plugin split).
     cp -a "$HERMES_ROOT/skills/identyclaw/SKILL.md" "$app/skills/identity/identyclaw/SKILL.md" 2>/dev/null || true
   fi
   # Wrappers so `idcp` / auth sidecar work inside the gateway and docker sandboxes.
   # Prefer /opt/idcp (mounted in both); never hard-require a host packages path —
-  # sandboxes do not have /home/<user>/hermes-agents/packages/….
+  # sandboxes do not have the hermes-identyclaw-auth checkout.
   local _wrap
   _wrap="$(mktemp -d)"
   cat >"${_wrap}/idcp" <<'EOF'

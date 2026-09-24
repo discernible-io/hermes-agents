@@ -1,153 +1,52 @@
-# IdentyClaw packages for Hermes
+# IdentyClaw plugins (external repos)
 
-Publishable components so **stock Nous Hermes** can add IdentyClaw Passport.
-The Podman wrapper (`deploy/hermes.sh`) installs the same packages into the
-app dir. A vanilla checkout can install them with `hermes plugins install`.
+The Passport packages no longer live in this tree. They are sibling checkouts
+(or separate GitHub repos) next to `hermes-agents`:
 
-| Package | Role |
-|---------|------|
-| [`hermes-identyclaw-auth`](hermes-identyclaw-auth/) | `idcp` CLI + localhost RODiT auth sidecar (`@rodit/rodit-auth-be`) |
-| [`hermes-identyclaw-a2a`](hermes-identyclaw-a2a/) | Platform overlay (`a2a-platform`) — Passport JWT + `/api/login*` |
-| [`hermes-identyclaw-webhooks`](hermes-identyclaw-webhooks/) | Platform — RODiT `/hooks/wake` + `/hooks/agent` + `send_rodit_webhook` |
+| Directory / repo | Role |
+|------------------|------|
+| [`../hermes-identyclaw-auth`](../../hermes-identyclaw-auth/) ([GitHub](https://github.com/discernible-io/hermes-identyclaw-auth)) | `idcp` CLI + auth sidecar + skill |
+| [`../hermes-identyclaw-a2a`](../../hermes-identyclaw-a2a/) ([GitHub](https://github.com/discernible-io/hermes-identyclaw-a2a)) | Platform plugin `a2a-platform` |
+| [`../hermes-identyclaw-webhooks`](../../hermes-identyclaw-webhooks/) ([GitHub](https://github.com/discernible-io/hermes-identyclaw-webhooks)) | Platform plugin `identyclaw-webhooks` |
 
-Agent skill (not an npm package): copy from
-[`../deploy/skills/identyclaw/`](../deploy/skills/identyclaw/) into
-`$HERMES_HOME/skills/identity/identyclaw/`.
+`deploy/idcp` is a symlink to `../hermes-identyclaw-auth`. Override paths with
+`IDENTYCLAW_AUTH_DIR`, `IDENTYCLAW_A2A_DIR`, `IDENTYCLAW_WEBHOOKS_DIR`.
 
-Requires **Node ≥ 22.19**. Secrets and JWT cache go under the app dir resolved by
-`idcp` (`IDENTYCLAW_HOME` → `HERMES_APP_DIR` → `HERMES_HOME`, else a sibling
-`hermes-agents-app/` when running from this monorepo).
+## Existing Hermes agent
 
----
-
-## Operator path (Podman wrapper)
-
-```bash
-./deploy/hermes.sh identyclaw-peer-install
-./deploy/hermes.sh identyclaw-auth-start
-./deploy/hermes.sh start
-```
-
-See root [README §5b](../README.md#5b-passport-peer-stack-opt-in--a2a--signed-hooks).
-
----
-
-## Stock Hermes (vanilla install)
-
-Keep [upstream Hermes](https://github.com/NousResearch/hermes-agent). From this
-checkout (or a clone of `main`):
+From the `hermes-agents` umbrella (with siblings present, or `--fetch` once the
+GitHub repos exist):
 
 ```bash
 export HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 ./install.sh          # Tier 1: idcp + skill
-./install.sh --peer   # Tier 2: + a2a-platform + identyclaw-webhooks
+./install.sh --peer   # Tier 2: + plugins + config enablement
+# ./install.sh --fetch --peer   # clone missing siblings from GitHub
 ```
 
-You only need this packages tree — not the Podman app layout.
+Or install plugins only via Hermes:
+
+```bash
+hermes plugins install discernible-io/hermes-identyclaw-a2a
+hermes plugins install discernible-io/hermes-identyclaw-webhooks
+```
+
+## Podman wrapper (this host)
+
+```bash
+./deploy/hermes.sh identyclaw-peer-install
+./deploy/hermes.sh start
+```
+
+## Layout after install
 
 | Path | Role |
 |------|------|
 | `$HERMES_HOME/secrets/near-credentials/` | NEAR key JSON (`idcp enroll`) |
 | `$HERMES_HOME/secrets/identyclaw/` | Per-host JWT cache (never print to the model) |
-| `$HERMES_HOME/bin/idcp` | CLI shim on PATH for gateway + sandboxes |
+| `$HERMES_HOME/bin/idcp` | CLI shim on PATH |
 | `$HERMES_HOME/skills/identity/identyclaw/` | Agent skill |
 | `$HERMES_HOME/plugins/a2a-platform/` | Tier 2 only |
 | `$HERMES_HOME/plugins/identyclaw-webhooks/` | Tier 2 only |
 
-### Tier 1 — Call federated peers (usual need)
-
-Passport as *client*. No sidecar, no A2A/hooks plugins, no `WEBHOOK_SECRET`.
-Prefer `./install.sh` (above). Manual equivalent:
-
-```bash
-cd packages/hermes-identyclaw-auth
-npm install --omit=dev
-mkdir -p "$HERMES_HOME/bin" "$HERMES_HOME/skills/identity/identyclaw"
-ln -sf "$(pwd)/bin/idcp.mjs" "$HERMES_HOME/bin/idcp"
-cp -a ../../deploy/skills/identyclaw/. "$HERMES_HOME/skills/identity/identyclaw/"
-# Put $HERMES_HOME/bin on PATH (CLI, gateway process, docker/SSH sandboxes).
-
-idcp enroll
-# Human: https://purchase.identyclaw.com — recipient = printed account_id
-idcp ensure_session
-idcp me
-idcp ensure_session --base https://api.lastcradle.io
-idcp request GET /api/token/claims --base https://api.lastcradle.io
-```
-
-- One JWT **per API host**. A home JWT is not accepted at a peer.
-- Prefer `idcp` over inventing signatures or pasting tokens into chat.
-- Optional: `hermes mcp add IdentyClawDocs --url https://api.identyclaw.com/mcp`
-
-Package detail: [`hermes-identyclaw-auth/README.md`](hermes-identyclaw-auth/README.md).
-
-### Tier 2 — Be a Passport peer (optional)
-
-Only if other Passport agents should A2A or RODiT-wake this Hermes. Prefer
-`./install.sh --peer`. That copies plugins into `$HERMES_HOME/plugins/` and
-appends enablement to `config.yaml`.
-
-Alternatively, Hermes can clone the plugin subdirs itself:
-
-```bash
-hermes plugins install discernible-io/hermes-agents/packages/hermes-identyclaw-a2a
-hermes plugins install discernible-io/hermes-agents/packages/hermes-identyclaw-webhooks
-```
-
-The manifest `name:` is the install directory (`a2a-platform` overlays the bundled
-A2A plugin). From a local checkout, copying into `$HERMES_HOME/plugins/` is the
-same result:
-
-```bash
-REPO=…/hermes-agents
-mkdir -p "$HERMES_HOME/plugins"
-cp -a "$REPO/packages/hermes-identyclaw-a2a/." \
-  "$HERMES_HOME/plugins/a2a-platform/"
-cp -a "$REPO/packages/hermes-identyclaw-webhooks/." \
-  "$HERMES_HOME/plugins/identyclaw-webhooks/"
-```
-
-Enable plugins in `$HERMES_HOME/config.yaml` (also done by `./install.sh --peer`):
-
-```yaml
-plugins:
-  enabled:
-    - a2a-platform
-    - identyclaw-webhooks
-  entries:
-    a2a-platform:
-      enabled: true
-      allow_tool_override: true
-      granted_capabilities:
-        - tools.override
-    identyclaw-webhooks:
-      enabled: true
-```
-
-| Variable | Purpose |
-|----------|---------|
-| `NEAR_CREDENTIALS_FILE_PATH` | Absolute path to NEAR key JSON (JWT `aud` = passport `owner_id`) |
-| `A2A_PUBLIC_URL` | Public HTTPS base for A2A Agent Card |
-| `IDENTYCLAW_AUTH_PORT` | Sidecar (default `9910`) |
-| `IDENTYCLAW_HOOKS_PORT` | `/hooks/*` (default `9911`) |
-| `IDENTYCLAW_JWT_AUDIENCE` | Optional fallback only — prefer RoditClient |
-
-```bash
-NEAR_CREDENTIALS_FILE_PATH=… \
-  node "$REPO/packages/hermes-identyclaw-auth/bin/sidecar.mjs" --port 9910
-```
-
-Point Passport `metadata.webhook_url` (and `A2A_PUBLIC_URL`) at your public
-HTTPS base. Restart the gateway so plugins load.
-
-Does **not** replace Hermes HMAC `/webhooks/{route}` — that path still uses
-`WEBHOOK_SECRET` if you enable it. Details:
-[`hermes-identyclaw-a2a/README.md`](hermes-identyclaw-a2a/README.md),
-[`hermes-identyclaw-webhooks/README.md`](hermes-identyclaw-webhooks/README.md).
-
-### What not to do
-
-- Do not fork Hermes core or bake Passport into the Nous image for this.
-- Do not merge these packages into the Hermes source tree. Install them as
-  user plugins (`~/.hermes/plugins/` or `hermes plugins install`).
-- Do not send a home JWT to a federated peer.
+HMAC `/webhooks/{route}` is unchanged. Signed ingress is `/hooks/wake` and `/hooks/agent`.
