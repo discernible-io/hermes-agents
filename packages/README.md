@@ -1,8 +1,8 @@
 # IdentyClaw packages for Hermes
 
-Publishable components so **stock Nous Hermes** can add IdentyClaw Passport
-without this fork’s Podman wrapper (`deploy/hermes.sh`). Same packages power
-the fork via `./hermes.sh identyclaw-peer-install`.
+Publishable components so **stock Nous Hermes** can add IdentyClaw Passport.
+The Podman wrapper (`deploy/hermes.sh`) installs the same packages into the
+app dir. A vanilla checkout can install them with `hermes plugins install`.
 
 | Package | Role |
 |---------|------|
@@ -20,7 +20,7 @@ Requires **Node ≥ 22.19**. Secrets and JWT cache go under the app dir resolved
 
 ---
 
-## Operator path (this fork)
+## Operator path (Podman wrapper)
 
 ```bash
 ./deploy/hermes.sh identyclaw-peer-install
@@ -84,7 +84,16 @@ Only if other Passport agents should A2A or RODiT-wake this Hermes. Requires
 Tier 1, then:
 
 ```bash
-REPO=…/hermes-agents   # this repo (or packages release root)
+hermes plugins install discernible-io/hermes-agents/packages/hermes-identyclaw-a2a
+hermes plugins install discernible-io/hermes-agents/packages/hermes-identyclaw-webhooks
+```
+
+The manifest `name:` is the install directory (`a2a-platform` overlays the bundled
+A2A plugin). From a local checkout, copying into `$HERMES_HOME/plugins/` is the
+same result:
+
+```bash
+REPO=…/hermes-agents
 mkdir -p "$HERMES_HOME/plugins"
 cp -a "$REPO/packages/hermes-identyclaw-a2a/." \
   "$HERMES_HOME/plugins/a2a-platform/"
@@ -103,6 +112,8 @@ plugins:
     a2a-platform:
       enabled: true
       allow_tool_override: true
+      granted_capabilities:
+        - tools.override
     identyclaw-webhooks:
       enabled: true
 ```
@@ -131,6 +142,6 @@ Does **not** replace Hermes HMAC `/webhooks/{route}` — that path still uses
 ### What not to do
 
 - Do not fork Hermes core or bake Passport into the Nous image for this.
-- Do not put IdentyClaw into Agent Plugins as product surface; these are host
-  packages + optional platform plugins.
+- Do not merge these packages into the Hermes source tree. Install them as
+  user plugins (`~/.hermes/plugins/` or `hermes plugins install`).
 - Do not send a home JWT to a federated peer.

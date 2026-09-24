@@ -1,16 +1,15 @@
 # Hermes Agent (Podman) — `deploy/` wrapper
 
-Host-side **Podman + IdentyClaw** operator scripts that live inside this fork at
-`deploy/`. Upstream Hermes agent source is the rest of the repository
-([`discernible-io/hermes-agents`](https://github.com/discernible-io/hermes-agents),
-from [`NousResearch/hermes-agent`](https://github.com/NousResearch/hermes-agent)).
+Host-side **Podman + IdentyClaw** operator scripts. The agent runtime is the
+stock image `docker.io/nousresearch/hermes-agent` — this repository does not
+carry Hermes source. IdentyClaw ships as plugins under `packages/`.
 
 **Secrets, memory, skills, and config stay in the sibling app directory** so you
 can sync this checkout without carrying runtime state.
 
 | Path | Purpose |
 |------|---------|
-| `~/hermes-agents/` | This fork (upstream source + `deploy/` wrapper) |
+| `~/hermes-agents/` | This repo (plugins + `deploy/` wrapper; not a Hermes fork) |
 | `~/hermes-agents/deploy/` | Podman scripts, `idcp/`, nginx sidecar, IdentyClaw skill |
 | `~/hermes-agents-app/` | Runtime home (mounted at `/opt/data`) — `env.local`, `.env`, `config.yaml`, `skills/`, `memories/`, `sessions/` |
 

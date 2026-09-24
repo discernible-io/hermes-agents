@@ -495,7 +495,7 @@ cmd_setup() {
   _hermes_collect_operator_secrets
   _hermes_collect_passport_fields
   echo ""
-  echo "=== IdentyClaw Passport (this fork) ==="
+  echo "=== IdentyClaw Passport ==="
   cmd_idcp_setup || true
   setup_ensure_self_signed_certs || true
   echo ""
@@ -767,6 +767,8 @@ plugins:
     a2a-platform:
       enabled: true
       allow_tool_override: true
+      granted_capabilities:
+        - tools.override
     identyclaw-webhooks:
       enabled: true
 platforms:

@@ -75,8 +75,16 @@ def test_nginx_renderer_includes_hooks_and_login():
     assert "hermes_identyclaw_hooks" in script
 
 
-def test_hmac_webhook_adapter_still_present():
-    assert (REPO / "gateway" / "platforms" / "webhook.py").is_file()
+def test_a2a_manifest_overrides_bundled_platform():
+    text = (REPO / "packages" / "hermes-identyclaw-a2a" / "plugin.yaml").read_text()
+    assert "name: a2a-platform" in text
+    assert "tools.override" in text
+
+
+def test_webhooks_stay_off_hmac_routes():
+    text = (REPO / "packages" / "hermes-identyclaw-webhooks" / "plugin.yaml").read_text()
+    assert "HMAC" in text
+    assert "/webhooks/{route}" in text
 
 
 def test_deploy_idcp_is_symlink_to_auth_package():

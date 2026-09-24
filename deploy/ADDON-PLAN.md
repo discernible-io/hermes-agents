@@ -27,7 +27,7 @@ Code stays in the synced repo; runtime identity stays in the sibling app dir (`H
 ## Practitioner path (current)
 
 ```bash
-./hermes.sh setup              # Hermes wizard + IdentyClaw (required on this fork)
+./hermes.sh setup              # Hermes wizard + IdentyClaw (Podman wrapper)
 # or Passport-only resume:
 ./hermes.sh idcp-setup         # install → enroll → purchase guide → ensure_session → me
 ./hermes.sh start              # remount /opt/idcp + secrets for gateway / sandboxes
@@ -116,7 +116,7 @@ Mention IdentyClaw only as one consumer example.
 
 ## Comparison: this wrapper vs stock Nous Hermes
 
-| Concern | Stock [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) | This fork (`discernible-io/hermes-agents` + `deploy/`) |
+| Concern | Stock [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) | This repo (`discernible-io/hermes-agents`) |
 |---------|----------------------------------------------------------------------------------|--------------------------------------------|
 | Runtime image | `nousresearch/hermes-agent` (source in upstream) | Same image; **no fork** of Hermes |
 | Host orchestration | `docker compose` / install.sh / desktop | Rootless **Podman** via `deploy/hermes.sh` + sibling `hermes-agents-app/` |
@@ -134,6 +134,7 @@ Practitioners who only want Passport on stock Hermes can copy `idcp/` + the skil
 - [x] Publishable packages under `packages/` (auth sidecar + A2A overlay + `/hooks/*`).
 - [x] Opt-in `./hermes.sh identyclaw-peer-install` (does not change stock HMAC webhooks).
 - [ ] Align Himalaya and IdentyClaw install UX (same prompts: skill path, bin shim, volumes, “recreate gateway”).
+- [x] This repo is the plugin + Podman overlay. Hermes core stays upstream; do not merge `NousResearch/hermes-agent` into this tree.
 - [ ] Decide: extract standalone GitHub repos vs monorepo `packages/` only.
 - [ ] If extracting: pin versions, smoke-test enroll + peer A2A with OpenClaw.
 - [x] Draft / file Nous feature request (generic hooks above) → [PR #83805](https://github.com/NousResearch/hermes-agent/pull/83805).

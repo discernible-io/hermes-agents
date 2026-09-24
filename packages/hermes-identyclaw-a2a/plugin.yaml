@@ -8,6 +8,8 @@ description: >
   that mints per-peer JWTs via the identyclaw-auth sidecar. Same plugin key as
   bundled a2a-platform so user/project install last-writer-wins.
 author: Discernible IO
+capabilities:
+  - tools.override
 provides_tools:
   - a2a_discover
   - a2a_call

@@ -4,7 +4,7 @@ IdentyClaw Passport helpers for Hermes: **`idcp` CLI** (host login / HOLA) plus 
 
 ## Install (stock Hermes)
 
-Point secrets at your Hermes home (not the fork’s sibling app dir):
+Point secrets at your Hermes home (or `HERMES_APP_DIR` when using the Podman wrapper):
 
 ```bash
 export HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
