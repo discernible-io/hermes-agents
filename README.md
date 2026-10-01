@@ -25,33 +25,28 @@ Prerequisite: Hermes already installed from
 
 ### Tier 1 — Call federated peers (Passport as client)
 
-Auth is a Node package (`idcp` + skill), not a Hermes `plugin.yaml` plugin:
+Install the IdentyClaw auth plugin (official Hermes plugin installer):
 
 ```bash
-export HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
-git clone https://github.com/discernible-io/hermes-identyclaw-auth.git
-cd hermes-identyclaw-auth
-npm install --omit=dev
-mkdir -p "$HERMES_HOME/bin" "$HERMES_HOME/skills/identity/identyclaw"
-ln -sf "$(pwd)/bin/idcp.mjs" "$HERMES_HOME/bin/idcp"
-cp -a skills/identyclaw/. "$HERMES_HOME/skills/identity/identyclaw/"
-# Put $HERMES_HOME/bin on PATH for the Hermes CLI, gateway, and terminal sandboxes.
-
-idcp enroll
+hermes plugins install discernible-io/hermes-identyclaw-auth --enable
+hermes identyclaw install-deps
+hermes identyclaw enroll
 # Mint Passport at https://purchase.identyclaw.com (recipient = printed account_id)
-idcp ensure_session
-idcp me
+hermes identyclaw ensure_session
+hermes identyclaw me
 ```
 
 Optional docs MCP: `hermes mcp add IdentyClawDocs --url https://api.identyclaw.com/mcp`
 
 ### Tier 2 — Be a Passport peer (A2A + signed /hooks/*)
 
-Requires Tier 1, then install the platform plugins with Hermes’s official plugin
-installer ([Plugins guide](https://hermes-agent.nousresearch.com/docs/user-guide/features/plugins)):
+Requires Tier 1 with the auth sidecar healthy on `:9910`, then install the platform
+plugins ([Plugins guide](https://hermes-agent.nousresearch.com/docs/user-guide/features/plugins)):
 
 ```bash
+hermes identyclaw sidecar start
 hermes plugins install discernible-io/hermes-identyclaw-a2a --enable
+hermes plugins disable platforms/a2a                          # if bundled A2A still enabled
 hermes plugins install discernible-io/hermes-identyclaw-webhook --enable
 ```
 
@@ -64,20 +59,12 @@ Verify and manage with the same Nous CLI:
 ```bash
 hermes plugins list
 hermes plugins capabilities a2a-platform
-```
-
-Then start the auth sidecar and restart the Hermes gateway:
-
-```bash
-export NEAR_CREDENTIALS_FILE_PATH="$(ls "$HERMES_HOME"/secrets/near-credentials/*.json | head -1)"
-export A2A_PUBLIC_URL="https://your-public-host"   # Agent Card / discovery URL
-node /path/to/hermes-identyclaw-auth/bin/sidecar.mjs --port "${IDENTYCLAW_AUTH_PORT:-9910}"
-# restart gateway so plugins load
+hermes identyclaw sidecar status
 ```
 
 HMAC `/webhooks/{route}` is unchanged. Signed ingress is `/hooks/wake` and
-`/hooks/agent`. Plugin manifests install as `$HERMES_HOME/plugins/a2a-platform/`
-and `$HERMES_HOME/plugins/identyclaw-webhooks/`.
+`/hooks/agent`. Plugin manifests install as `$HERMES_HOME/plugins/identyclaw-auth/`,
+`$HERMES_HOME/plugins/a2a-platform/`, and `$HERMES_HOME/plugins/identyclaw-webhooks/`.
 
 NixOS users can declare the same GitHub sources via
 [`extraPlugins`](https://hermes-agent.nousresearch.com/docs/getting-started/nix-setup)
