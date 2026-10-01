@@ -50,21 +50,21 @@ hermes plugins disable platforms/a2a                          # if bundled A2A s
 hermes plugins install discernible-io/hermes-identyclaw-webhook --enable
 ```
 
-`a2a-platform` replaces bundled A2A tools — grant `tools.override` when Hermes
-prompts (or set `plugins.entries.a2a-platform.allow_tool_override: true` /
+`identyclaw-a2a` replaces bundled A2A tools — grant `tools.override` when Hermes
+prompts (or set `plugins.entries.identyclaw-a2a.allow_tool_override: true` /
 `granted_capabilities: [tools.override]` in `$HERMES_HOME/config.yaml`).
 
 Verify and manage with the same Nous CLI:
 
 ```bash
 hermes plugins list
-hermes plugins capabilities a2a-platform
+hermes plugins capabilities identyclaw-a2a
 hermes identyclaw sidecar status
 ```
 
 HMAC `/webhooks/{route}` is unchanged. Signed ingress is `/hooks/wake` and
 `/hooks/agent`. Plugin manifests install as `$HERMES_HOME/plugins/identyclaw-auth/`,
-`$HERMES_HOME/plugins/a2a-platform/`, and `$HERMES_HOME/plugins/identyclaw-webhooks/`.
+`$HERMES_HOME/plugins/identyclaw-a2a/`, and `$HERMES_HOME/plugins/identyclaw-webhooks/`.
 
 NixOS users can declare the same GitHub sources via
 [`extraPlugins`](https://hermes-agent.nousresearch.com/docs/getting-started/nix-setup)
