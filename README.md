@@ -110,3 +110,13 @@ Runtime state: `~/hermes-agents-app/` (`HERMES_APP_DIR`). See [`deploy/README.md
 - It does not vendor Hermes core or the IdentyClaw plugin source.
 - Passport replaces federated peer API keys, not model-provider keys.
 - NEAR private keys and JWTs never go in git, skills, or chat.
+
+<!-- discernible-io:product-links -->
+## Links
+
+Maintained by [Discernible](https://www.discernible.io/).
+
+- **Product:** [discernible.io](https://www.discernible.io/)
+- **Get a Passport:** [purchase.identyclaw.com](https://purchase.identyclaw.com) (buy once — no subscription)
+- **Verify HOLA:** [verify.identyclaw.com](https://verify.identyclaw.com)
+<!-- /discernible-io:product-links -->
