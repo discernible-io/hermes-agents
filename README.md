@@ -30,11 +30,13 @@ Install the IdentyClaw auth plugin (official Hermes plugin installer):
 ```bash
 hermes plugins install discernible-io/hermes-identyclaw-auth --enable
 hermes identyclaw install-deps
-hermes identyclaw enroll
 # Mint Passport at https://purchase.identyclaw.com (recipient = printed account_id)
 hermes identyclaw ensure_session
 hermes identyclaw me
 ```
+
+`install-deps` installs Node deps and creates a NEAR implicit account when none is
+present (prints `account_id`). Re-run `hermes identyclaw enroll` only to reprint the id.
 
 Optional docs MCP: `hermes mcp add IdentyClawDocs --url https://api.identyclaw.com/mcp`
 
