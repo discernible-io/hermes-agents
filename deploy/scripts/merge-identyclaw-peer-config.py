@@ -13,7 +13,10 @@ from pathlib import Path
 try:
     import yaml
 except ImportError:
-    print("pyyaml missing — enable a2a-platform + identyclaw-webhooks in config.yaml manually", file=sys.stderr)
+    print(
+        "pyyaml missing — enable identyclaw-auth + identyclaw-a2a + identyclaw-webhooks in config.yaml manually",
+        file=sys.stderr,
+    )
     raise SystemExit(0)
 
 MARKER = "# identyclaw-peer (managed by hermes.sh identyclaw-peer-install)"
@@ -61,35 +64,49 @@ def main() -> int:
     if not isinstance(enabled, list):
         enabled = []
         plugins["enabled"] = enabled
-    for name in ("a2a-platform", "identyclaw-webhooks"):
+    # Drop legacy install-dir id (yaml name a2a-platform hits bundled platforms/a2a).
+    while "a2a-platform" in enabled:
+        enabled.remove("a2a-platform")
+    for name in ("identyclaw-auth", "identyclaw-a2a", "identyclaw-webhooks"):
         if name not in enabled:
             enabled.append(name)
+    disabled = plugins.setdefault("disabled", [])
+    if not isinstance(disabled, list):
+        disabled = []
+        plugins["disabled"] = disabled
+    if "platforms/a2a" not in disabled:
+        disabled.append("platforms/a2a")
+
     entries = plugins.setdefault("entries", {})
     if not isinstance(entries, dict):
         entries = {}
         plugins["entries"] = entries
-    a2a_entry = entries.setdefault("a2a-platform", {})
-    if not isinstance(a2a_entry, dict):
-        a2a_entry = {}
-        entries["a2a-platform"] = a2a_entry
-    a2a_entry["enabled"] = True
-    a2a_entry["allow_tool_override"] = True
-    caps = a2a_entry.setdefault("granted_capabilities", [])
-    if not isinstance(caps, list):
-        caps = []
-        a2a_entry["granted_capabilities"] = caps
-    if "tools.override" not in caps:
-        caps.append("tools.override")
-    hooks_entry = entries.setdefault("identyclaw-webhooks", {})
-    if not isinstance(hooks_entry, dict):
-        hooks_entry = {}
-        entries["identyclaw-webhooks"] = hooks_entry
-    hooks_entry["enabled"] = True
+    # Prefer unique plugin id; keep a2a-platform entry only if already present for migration.
+    entries.pop("a2a-platform", None)
+    for plug_id, allow_override in (
+        ("identyclaw-auth", False),
+        ("identyclaw-a2a", True),
+        ("identyclaw-webhooks", False),
+    ):
+        entry = entries.setdefault(plug_id, {})
+        if not isinstance(entry, dict):
+            entry = {}
+            entries[plug_id] = entry
+        entry["enabled"] = True
+        if allow_override:
+            entry["allow_tool_override"] = True
+            caps = entry.setdefault("granted_capabilities", [])
+            if not isinstance(caps, list):
+                caps = []
+                entry["granted_capabilities"] = caps
+            if "tools.override" not in caps:
+                caps.append("tools.override")
 
     platforms = data.setdefault("platforms", {})
     if not isinstance(platforms, dict):
         platforms = {}
         data["platforms"] = platforms
+    # Bundled A2A stays off; overlay owns inbound via identyclaw-a2a.
     a2a_plat = platforms.setdefault("a2a", {})
     if not isinstance(a2a_plat, dict):
         a2a_plat = {}

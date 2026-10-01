@@ -35,7 +35,7 @@ usage() {
 
 Options:
   --client          Install idcp CLI + skill only (default)
-  --peer            Also install a2a-platform + identyclaw-webhooks plugins
+  --peer            Also install identyclaw-auth + identyclaw-a2a + identyclaw-webhooks plugins
   --fetch           Clone missing sibling plugin repos from GitHub into ${PARENT}/
   --no-enable       Install plugins/files but do not edit config.yaml
   -h, --help        Show this help
@@ -137,19 +137,27 @@ install_auth_and_skill() {
 }
 
 install_peer_plugins() {
-  [[ -d "$pkg_a2a" && -d "$pkg_hooks" ]] || die "missing peer plugin checkouts"
+  [[ -d "$pkg_auth" && -d "$pkg_a2a" && -d "$pkg_hooks" ]] || die "missing peer plugin checkouts"
   local plugins_dir="${HERMES_HOME}/plugins"
   mkdir -p "$plugins_dir"
-  rm -rf "${plugins_dir}/a2a-platform" "${plugins_dir}/identyclaw-webhooks"
-  # Copy plugin files only (skip local __pycache__).
-  mkdir -p "${plugins_dir}/a2a-platform" "${plugins_dir}/identyclaw-webhooks"
-  cp -a "$pkg_a2a"/. "${plugins_dir}/a2a-platform/"
+  # Install dirs must match plugin.yaml ids (not legacy a2a-platform).
+  rm -rf "${plugins_dir}/a2a-platform" \
+    "${plugins_dir}/identyclaw-auth" \
+    "${plugins_dir}/identyclaw-a2a" \
+    "${plugins_dir}/identyclaw-webhooks"
+  mkdir -p "${plugins_dir}/identyclaw-auth" \
+    "${plugins_dir}/identyclaw-a2a" \
+    "${plugins_dir}/identyclaw-webhooks"
+  cp -a "$pkg_auth"/. "${plugins_dir}/identyclaw-auth/"
+  cp -a "$pkg_a2a"/. "${plugins_dir}/identyclaw-a2a/"
   cp -a "$pkg_hooks"/. "${plugins_dir}/identyclaw-webhooks/"
-  rm -rf "${plugins_dir}/a2a-platform/__pycache__" \
+  rm -rf "${plugins_dir}/identyclaw-auth/__pycache__" \
+    "${plugins_dir}/identyclaw-a2a/__pycache__" \
     "${plugins_dir}/identyclaw-webhooks/__pycache__" \
-    "${plugins_dir}/a2a-platform/.git" \
+    "${plugins_dir}/identyclaw-auth/.git" \
+    "${plugins_dir}/identyclaw-a2a/.git" \
     "${plugins_dir}/identyclaw-webhooks/.git"
-  echo "Installed plugins → ${plugins_dir}/a2a-platform , identyclaw-webhooks"
+  echo "Installed plugins → ${plugins_dir}/identyclaw-auth , identyclaw-a2a , identyclaw-webhooks"
 }
 
 enable_peer_config() {
@@ -185,16 +193,24 @@ if marker in text or "identyclaw-webhooks" in text:
     raise SystemExit(0)
 # Only append when there is no existing plugins: key (avoid YAML last-wins wipe).
 if "\nplugins:" in text or text.startswith("plugins:"):
-    print(f"{cfg} already has plugins: — enable a2a-platform + identyclaw-webhooks manually", file=sys.stderr)
+    print(
+        f"{cfg} already has plugins: — enable identyclaw-auth + identyclaw-a2a + identyclaw-webhooks manually",
+        file=sys.stderr,
+    )
     raise SystemExit(0)
 block = f"""
 {marker}
 plugins:
   enabled:
-    - a2a-platform
+    - identyclaw-auth
+    - identyclaw-a2a
     - identyclaw-webhooks
+  disabled:
+    - platforms/a2a
   entries:
-    a2a-platform:
+    identyclaw-auth:
+      enabled: true
+    identyclaw-a2a:
       enabled: true
       allow_tool_override: true
       granted_capabilities:
@@ -219,7 +235,8 @@ print_next_steps() {
   echo "  bin/idcp  → ${HERMES_HOME}/bin/idcp"
   echo "  skill     → ${HERMES_HOME}/skills/identity/identyclaw/"
   if [[ "$MODE" == peer ]]; then
-    echo "  plugins   → ${HERMES_HOME}/plugins/a2a-platform"
+    echo "  plugins   → ${HERMES_HOME}/plugins/identyclaw-auth"
+    echo "             ${HERMES_HOME}/plugins/identyclaw-a2a"
     echo "             ${HERMES_HOME}/plugins/identyclaw-webhooks"
   fi
   echo ""

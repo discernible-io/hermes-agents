@@ -119,6 +119,7 @@ start_identyclaw_auth_container() {
   if hermes_is_pod_mode && podman pod exists "${HERMES_POD:-hermes-agent-pod}" 2>/dev/null; then
     args+=(--pod "${HERMES_POD}")
   else
+    # Standalone: share hermes netns — gateway must already be running.
     args+=(--network "container:${HERMES_CONTAINER}")
   fi
   args+=(
@@ -141,6 +142,23 @@ start_identyclaw_auth_container() {
   args+=(--entrypoint node "$HERMES_IMAGE" /opt/idcp/bin/sidecar.mjs --port "$port")
   podman "${args[@]}"
   echo "Auth sidecar ${name} on gateway network 127.0.0.1:${port}"
+}
+
+# Peer plugins refuse to enable until /health is up — wait after starting the sidecar.
+wait_identyclaw_auth_healthy() {
+  identyclaw_peer_enabled || return 0
+  local name port i
+  name="$(identyclaw_auth_container)"
+  port="${IDENTYCLAW_AUTH_PORT:-9910}"
+  for i in $(seq 1 30); do
+    if podman exec "$name" curl -fsS "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
+      echo "Auth sidecar healthy on 127.0.0.1:${port}"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "Warning: auth sidecar ${name} did not become healthy on :${port} within 30s" >&2
+  return 1
 }
 
 # Shared hermes gateway run args (caller adds --pod or host -p ports).
@@ -234,6 +252,7 @@ cmd_start_standalone() {
 
   podman "${args[@]}"
   start_identyclaw_auth_container
+  wait_identyclaw_auth_healthy || true
   echo "Started ${HERMES_CONTAINER} (standalone, restart=always) — API ${HERMES_API_PORT}, Telegram webhook ${HERMES_TELEGRAM_PORT}"
 }
 
@@ -290,9 +309,11 @@ cmd_start_pod() {
   if [[ -n "${HERMES_DASHBOARD_PORT:-}" ]]; then
     echo "Note: HERMES_DASHBOARD_PORT is ignored in pod mode; use loopback API or extend the pod publish list." >&2
   fi
+  # Peer plugins gate on sidecar /health at gateway boot — start auth first.
+  start_identyclaw_auth_container
+  wait_identyclaw_auth_healthy || true
   args+=("$HERMES_IMAGE" gateway run)
   podman "${args[@]}"
-  start_identyclaw_auth_container
 
   nginx_conf="${app}/nginx/nginx.conf"
   echo "Starting nginx sidecar ${HERMES_NGINX_CONTAINER} ..."
@@ -760,6 +781,8 @@ cmd_identyclaw_peer_install() {
   (cd "$pkg_auth" && npm install --omit=dev)
 
   # Host cannot mkdir/cp into a 0700 tree owned by the running gateway — use userns root.
+  # Plugin install dirs must match yaml ids (identyclaw-auth / identyclaw-a2a /
+  # identyclaw-webhooks). Legacy a2a-platform/ is removed so it cannot shadow.
   if [[ ! -w "$app" ]]; then
     if ! command -v podman >/dev/null 2>&1; then
       echo "App dir ${app} is not writable (gateway owns it) and podman is missing." >&2
@@ -772,10 +795,21 @@ cmd_identyclaw_peer_install() {
       mkdir -p $(printf '%q' "$app/plugins") $(printf '%q' "$app/bin") \
         $(printf '%q' "$app/run") $(printf '%q' "$app/logs")
       rm -rf $(printf '%q' "$app/plugins/a2a-platform") \
+        $(printf '%q' "$app/plugins/identyclaw-auth") \
+        $(printf '%q' "$app/plugins/identyclaw-a2a") \
         $(printf '%q' "$app/plugins/identyclaw-webhooks")
-      cp -a $(printf '%q' "$pkg_a2a") $(printf '%q' "$app/plugins/a2a-platform")
-      cp -a $(printf '%q' "$pkg_hooks") $(printf '%q' "$app/plugins/identyclaw-webhooks")
-      rm -rf $(printf '%q' "$app/plugins/a2a-platform/__pycache__") \
+      # Auth: Python plugin + Node tree (node_modules from host npm ci); skip .git.
+      mkdir -p $(printf '%q' "$app/plugins/identyclaw-auth") \
+        $(printf '%q' "$app/plugins/identyclaw-a2a") \
+        $(printf '%q' "$app/plugins/identyclaw-webhooks")
+      cp -a $(printf '%q' "$pkg_auth")/. $(printf '%q' "$app/plugins/identyclaw-auth/")
+      cp -a $(printf '%q' "$pkg_a2a")/. $(printf '%q' "$app/plugins/identyclaw-a2a/")
+      cp -a $(printf '%q' "$pkg_hooks")/. $(printf '%q' "$app/plugins/identyclaw-webhooks/")
+      rm -rf $(printf '%q' "$app/plugins/identyclaw-auth/.git") \
+        $(printf '%q' "$app/plugins/identyclaw-a2a/.git") \
+        $(printf '%q' "$app/plugins/identyclaw-webhooks/.git") \
+        $(printf '%q' "$app/plugins/identyclaw-auth/__pycache__") \
+        $(printf '%q' "$app/plugins/identyclaw-a2a/__pycache__") \
         $(printf '%q' "$app/plugins/identyclaw-webhooks/__pycache__")
     "
     podman unshare touch "${app}/.identyclaw-peer-enabled"
@@ -784,16 +818,29 @@ cmd_identyclaw_peer_install() {
       app=$(printf '%q' "$app")
       owner=\$(stat -c '%u' \"\$app\" 2>/dev/null || echo 10000)
       chown -R \"\$owner:\$owner\" \
-        \"\$app/plugins/a2a-platform\" \
+        \"\$app/plugins/identyclaw-auth\" \
+        \"\$app/plugins/identyclaw-a2a\" \
         \"\$app/plugins/identyclaw-webhooks\" \
         \"\$app/.identyclaw-peer-enabled\" 2>/dev/null || true
     "
   else
     mkdir -p "$plugins_dir" "$app/bin"
-    rm -rf "${plugins_dir}/a2a-platform" "${plugins_dir}/identyclaw-webhooks"
-    cp -a "$pkg_a2a" "${plugins_dir}/a2a-platform"
-    cp -a "$pkg_hooks" "${plugins_dir}/identyclaw-webhooks"
-    rm -rf "${plugins_dir}/a2a-platform/__pycache__" "${plugins_dir}/identyclaw-webhooks/__pycache__"
+    rm -rf "${plugins_dir}/a2a-platform" \
+      "${plugins_dir}/identyclaw-auth" \
+      "${plugins_dir}/identyclaw-a2a" \
+      "${plugins_dir}/identyclaw-webhooks"
+    mkdir -p "${plugins_dir}/identyclaw-auth" \
+      "${plugins_dir}/identyclaw-a2a" \
+      "${plugins_dir}/identyclaw-webhooks"
+    cp -a "$pkg_auth"/. "${plugins_dir}/identyclaw-auth/"
+    cp -a "$pkg_a2a"/. "${plugins_dir}/identyclaw-a2a/"
+    cp -a "$pkg_hooks"/. "${plugins_dir}/identyclaw-webhooks/"
+    rm -rf "${plugins_dir}/identyclaw-auth/.git" \
+      "${plugins_dir}/identyclaw-a2a/.git" \
+      "${plugins_dir}/identyclaw-webhooks/.git" \
+      "${plugins_dir}/identyclaw-auth/__pycache__" \
+      "${plugins_dir}/identyclaw-a2a/__pycache__" \
+      "${plugins_dir}/identyclaw-webhooks/__pycache__"
     touch "${app}/.identyclaw-peer-enabled"
   fi
   # Refresh container-safe /opt/idcp wrappers (never bake a host packages path).
@@ -811,13 +858,30 @@ cmd_identyclaw_peer_install() {
   fi
 
   # Resolve NEAR creds path for sidecar / gateway (upsert_env_local_kv already handles UID 10000)
+  # Prefer .active pin when multiple *.json leftovers exist.
   local cred=""
   if [[ -w "$app" ]]; then
-    if [[ -d "${app}/secrets/near-credentials" ]]; then
+    if [[ -f "${app}/secrets/near-credentials/.active" ]]; then
+      local base
+      base="$(tr -d '[:space:]' <"${app}/secrets/near-credentials/.active")"
+      [[ -n "$base" && -f "${app}/secrets/near-credentials/${base}" ]] \
+        && cred="${app}/secrets/near-credentials/${base}"
+    fi
+    if [[ -z "$cred" && -d "${app}/secrets/near-credentials" ]]; then
       cred="$(find "${app}/secrets/near-credentials" -maxdepth 1 -name '*.json' | head -1 || true)"
     fi
   else
-    cred="$(podman unshare bash -c "find $(printf '%q' "${app}/secrets/near-credentials") -maxdepth 1 -name '*.json' 2>/dev/null | head -1" || true)"
+    cred="$(podman unshare bash -c "
+      d=$(printf '%q' "${app}/secrets/near-credentials")
+      if [[ -f \"\$d/.active\" ]]; then
+        base=\$(tr -d '[:space:]' <\"\$d/.active\")
+        if [[ -n \"\$base\" && -f \"\$d/\$base\" ]]; then
+          echo \"\$d/\$base\"
+          exit 0
+        fi
+      fi
+      find \"\$d\" -maxdepth 1 -name '*.json' 2>/dev/null | head -1
+    " || true)"
   fi
   if [[ -n "$cred" ]]; then
     upsert_env_local_kv "$(hermes_env_file)" NEAR_CREDENTIALS_FILE_PATH "$cred"
@@ -832,7 +896,7 @@ cmd_identyclaw_peer_install() {
 
   echo ""
   echo "IdentyClaw peer stack installed (opt-in)."
-  echo "  Plugins → ${plugins_dir}/a2a-platform , identyclaw-webhooks"
+  echo "  Plugins → ${plugins_dir}/identyclaw-auth , identyclaw-a2a , identyclaw-webhooks"
   echo "  Flag    → ${app}/.identyclaw-peer-enabled"
   if container_is_running "${HERMES_CONTAINER:-hermes}"; then
     echo ""

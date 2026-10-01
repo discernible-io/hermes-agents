@@ -24,8 +24,19 @@ def test_sibling_plugin_checkouts_exist():
 
 def test_a2a_manifest_overrides_bundled_platform():
     text = (_plugin("hermes-identyclaw-a2a") / "plugin.yaml").read_text()
-    assert "name: a2a-platform" in text
+    # Unique id — do not reuse bundled yaml name a2a-platform.
+    assert "name: identyclaw-a2a" in text
     assert "tools.override" in text
+    assert "requires_plugins" in text
+    auth = (_plugin("hermes-identyclaw-auth") / "plugin.yaml").read_text()
+    assert "name: identyclaw-auth" in auth
+
+
+def test_auth_is_hermes_plugin():
+    root = _plugin("hermes-identyclaw-auth")
+    assert (root / "plugin.yaml").is_file()
+    assert (root / "cli.py").is_file()
+    assert (root / "scripts" / "install-stock-hermes.sh").is_file()
 
 
 def test_webhooks_stay_off_hmac_routes():
