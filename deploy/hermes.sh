@@ -754,11 +754,18 @@ cmd_identyclaw_peer_install() {
       mkdir -p $(printf '%q' "$app/plugins") $(printf '%q' "$app/bin") \
         $(printf '%q' "$app/run") $(printf '%q' "$app/logs")
       rm -rf $(printf '%q' "$app/plugins/a2a-platform") \
+        $(printf '%q' "$app/plugins/identyclaw-auth") \
+        $(printf '%q' "$app/plugins/identyclaw-a2a") \
         $(printf '%q' "$app/plugins/identyclaw-webhooks")
-      cp -a $(printf '%q' "$pkg_a2a") $(printf '%q' "$app/plugins/a2a-platform")
+      cp -a $(printf '%q' "$pkg_auth") $(printf '%q' "$app/plugins/identyclaw-auth")
+      cp -a $(printf '%q' "$pkg_a2a") $(printf '%q' "$app/plugins/identyclaw-a2a")
       cp -a $(printf '%q' "$pkg_hooks") $(printf '%q' "$app/plugins/identyclaw-webhooks")
-      rm -rf $(printf '%q' "$app/plugins/a2a-platform/__pycache__") \
-        $(printf '%q' "$app/plugins/identyclaw-webhooks/__pycache__")
+      rm -rf $(printf '%q' "$app/plugins/identyclaw-auth/__pycache__") \
+        $(printf '%q' "$app/plugins/identyclaw-a2a/__pycache__") \
+        $(printf '%q' "$app/plugins/identyclaw-webhooks/__pycache__") \
+        $(printf '%q' "$app/plugins/identyclaw-auth/.git") \
+        $(printf '%q' "$app/plugins/identyclaw-a2a/.git") \
+        $(printf '%q' "$app/plugins/identyclaw-webhooks/.git")
     "
     podman unshare touch "${app}/.identyclaw-peer-enabled"
     # Keep hermes ownership on new files when the tree is UID 10000.
@@ -766,16 +773,26 @@ cmd_identyclaw_peer_install() {
       app=$(printf '%q' "$app")
       owner=\$(stat -c '%u' \"\$app\" 2>/dev/null || echo 10000)
       chown -R \"\$owner:\$owner\" \
-        \"\$app/plugins/a2a-platform\" \
+        \"\$app/plugins/identyclaw-auth\" \
+        \"\$app/plugins/identyclaw-a2a\" \
         \"\$app/plugins/identyclaw-webhooks\" \
         \"\$app/.identyclaw-peer-enabled\" 2>/dev/null || true
     "
   else
     mkdir -p "$plugins_dir" "$app/bin"
-    rm -rf "${plugins_dir}/a2a-platform" "${plugins_dir}/identyclaw-webhooks"
-    cp -a "$pkg_a2a" "${plugins_dir}/a2a-platform"
+    rm -rf "${plugins_dir}/a2a-platform" \
+      "${plugins_dir}/identyclaw-auth" \
+      "${plugins_dir}/identyclaw-a2a" \
+      "${plugins_dir}/identyclaw-webhooks"
+    cp -a "$pkg_auth" "${plugins_dir}/identyclaw-auth"
+    cp -a "$pkg_a2a" "${plugins_dir}/identyclaw-a2a"
     cp -a "$pkg_hooks" "${plugins_dir}/identyclaw-webhooks"
-    rm -rf "${plugins_dir}/a2a-platform/__pycache__" "${plugins_dir}/identyclaw-webhooks/__pycache__"
+    rm -rf "${plugins_dir}/identyclaw-auth/__pycache__" \
+      "${plugins_dir}/identyclaw-a2a/__pycache__" \
+      "${plugins_dir}/identyclaw-webhooks/__pycache__" \
+      "${plugins_dir}/identyclaw-auth/.git" \
+      "${plugins_dir}/identyclaw-a2a/.git" \
+      "${plugins_dir}/identyclaw-webhooks/.git"
     touch "${app}/.identyclaw-peer-enabled"
   fi
   # Refresh container-safe /opt/idcp wrappers (never bake a host packages path).
@@ -797,10 +814,15 @@ block = f"""
 {marker}
 plugins:
   enabled:
-    - a2a-platform
+    - identyclaw-auth
+    - identyclaw-a2a
     - identyclaw-webhooks
+  disabled:
+    - platforms/a2a
   entries:
-    a2a-platform:
+    identyclaw-auth:
+      enabled: true
+    identyclaw-a2a:
       enabled: true
       allow_tool_override: true
       granted_capabilities:
@@ -850,7 +872,7 @@ PY
 
   echo ""
   echo "IdentyClaw peer stack installed (opt-in)."
-  echo "  Plugins → ${plugins_dir}/a2a-platform , identyclaw-webhooks"
+  echo "  Plugins → ${plugins_dir}/identyclaw-auth , identyclaw-a2a , identyclaw-webhooks"
   echo "  Flag    → ${app}/.identyclaw-peer-enabled"
   if container_is_running "${HERMES_CONTAINER:-hermes}"; then
     echo ""

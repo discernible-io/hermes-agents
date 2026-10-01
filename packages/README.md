@@ -1,30 +1,35 @@
 # IdentyClaw plugins (external repos)
 
-Passport packages are public GitHub repos. Locally they are usually sibling
-checkouts next to `hermes-agents`:
+Passport packages are public GitHub repos. Install them with the stock Hermes
+Plugins CLI (preferred), or keep sibling checkouts next to `hermes-agents` for
+the Podman wrapper / `--local` install path.
 
-| Local dir / GitHub | Role |
-|--------------------|------|
-| [`hermes-identyclaw-auth`](https://github.com/discernible-io/hermes-identyclaw-auth) | `idcp` CLI + auth sidecar + skill |
-| [`hermes-identyclaw-a2a`](https://github.com/discernible-io/hermes-identyclaw-a2a) | Platform plugin `a2a-platform` |
-| [`hermes-identyclaw-webhook`](https://github.com/discernible-io/hermes-identyclaw-webhook) | Platform plugin `identyclaw-webhooks` (local sibling may still be named `…-webhooks`) |
+| Local dir / GitHub | Plugin id | Role |
+|--------------------|-----------|------|
+| [`hermes-identyclaw-auth`](https://github.com/discernible-io/hermes-identyclaw-auth) | `identyclaw-auth` | `idcp` / `hermes identyclaw` + auth sidecar + skill |
+| [`hermes-identyclaw-a2a`](https://github.com/discernible-io/hermes-identyclaw-a2a) | `identyclaw-a2a` | Passport A2A overlay (disable bundled `platforms/a2a`) |
+| [`hermes-identyclaw-webhook`](https://github.com/discernible-io/hermes-identyclaw-webhook) | `identyclaw-webhooks` | RODiT `/hooks/*` (local sibling may still be named `…-webhooks`) |
 
 `deploy/idcp` → `../hermes-identyclaw-auth`. Override with
 `IDENTYCLAW_AUTH_DIR`, `IDENTYCLAW_A2A_DIR`, `IDENTYCLAW_WEBHOOKS_DIR`.
 
-## Existing Hermes agent
+## Existing Hermes agent (official CLI)
 
 ```bash
 export HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
-./install.sh --fetch          # Tier 1
-./install.sh --fetch --peer   # Tier 2
+hermes plugins install discernible-io/hermes-identyclaw-auth --enable
+hermes identyclaw install-deps
+# Mint Passport, then for Tier 2:
+bash "$HERMES_HOME/plugins/identyclaw-auth/scripts/install-stock-hermes.sh" \
+  --a2a-public-url "https://YOUR.PUBLIC.HOST"
 ```
 
-Or:
+Or via this umbrella:
 
 ```bash
-hermes plugins install discernible-io/hermes-identyclaw-a2a --enable
-hermes plugins install discernible-io/hermes-identyclaw-webhook --enable
+./install.sh               # Tier 1 via hermes plugins install
+./install.sh --peer        # Tier 2 (delegates to install-stock-hermes.sh)
+./install.sh --local --peer --fetch   # sibling copy into $HERMES_HOME/plugins/
 ```
 
 ## Podman wrapper (this host)
@@ -38,11 +43,10 @@ hermes plugins install discernible-io/hermes-identyclaw-webhook --enable
 
 | Path | Role |
 |------|------|
-| `$HERMES_HOME/secrets/near-credentials/` | NEAR key JSON (`idcp enroll`) |
+| `$HERMES_HOME/secrets/near-credentials/` | NEAR key JSON (`install-deps` / `enroll`) |
 | `$HERMES_HOME/secrets/identyclaw/` | Per-host JWT cache (never print to the model) |
-| `$HERMES_HOME/bin/idcp` | CLI shim on PATH |
-| `$HERMES_HOME/skills/identity/identyclaw/` | Agent skill |
-| `$HERMES_HOME/plugins/a2a-platform/` | Tier 2 only |
-| `$HERMES_HOME/plugins/identyclaw-webhooks/` | Tier 2 only (manifest name) |
+| `$HERMES_HOME/plugins/identyclaw-auth/` | Auth plugin + Node sidecar |
+| `$HERMES_HOME/plugins/identyclaw-a2a/` | Tier 2 only |
+| `$HERMES_HOME/plugins/identyclaw-webhooks/` | Tier 2 only |
 
 HMAC `/webhooks/{route}` is unchanged. Signed ingress is `/hooks/wake` and `/hooks/agent`.

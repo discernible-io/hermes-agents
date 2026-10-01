@@ -79,8 +79,9 @@ If you prefer a single script (clones siblings next to this repo):
 ```bash
 git clone https://github.com/discernible-io/hermes-agents.git
 cd hermes-agents
-./install.sh --fetch              # Tier 1
-./install.sh --fetch --peer       # Tier 2 + config enablement
+./install.sh                      # Tier 1 via hermes plugins install
+./install.sh --peer               # Tier 2 (auth playbook / peer plugins)
+./install.sh --local --fetch --peer   # sibling clone + copy (no hermes CLI)
 ```
 
 ## Podman on this host
