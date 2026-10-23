@@ -316,6 +316,7 @@ confirm_app_nuke() {
   base="$(basename "$app")"
   echo "This DELETES ${app}"
   echo "  env.local, .env, Passport keys, Hermes data, TLS — all gone."
+  echo "  memories/ and SOUL.md are copied to $(hermes_memory_backup_dir) before delete."
   echo "  init never overwrites; nuke is the overwrite path."
   if [[ "$yes" == "1" ]]; then
     return 0
@@ -342,6 +343,315 @@ remove_app_dir() {
   fi
   echo "Could not remove ${app} (permission). Stop the gateway and retry." >&2
   return 1
+}
+
+# Sibling of the app dir so ./hermes.sh nuke cannot delete the only copy.
+# Override with HERMES_MEMORY_BACKUP_DIR.
+hermes_memory_backup_dir() {
+  if [[ -n "${HERMES_MEMORY_BACKUP_DIR:-}" ]]; then
+    printf '%s' "$HERMES_MEMORY_BACKUP_DIR"
+    return
+  fi
+  printf '%s' "$(hermes_app_dir)-memory-backups"
+}
+
+# Copy memories/ (except lock files) and SOUL.md into $2.
+# Optional $3=1: chown to uid 0 inside a rootless user namespace (host user).
+_memory_snapshot_copy() {
+  local app="${1:?}" stage="${2:?}" do_chown="${3:-0}"
+  copy_dir() {
+    local from="$1" to="$2" f rel
+    [[ -d "$from" ]] || return 0
+    mkdir -p "$to"
+    while IFS= read -r -d '' f; do
+      rel="${f#"$from"/}"
+      mkdir -p "$to/$(dirname -- "$rel")"
+      cp -a "$f" "$to/$rel"
+    done < <(find "$from" -type f ! -name '*.lock' -print0)
+  }
+  copy_dir "$app/memories" "$stage/memories"
+  if [[ -f "$app/SOUL.md" ]]; then
+    cp -a "$app/SOUL.md" "$stage/SOUL.md"
+  fi
+  find "$stage" -mindepth 1 -type d -empty -delete 2>/dev/null || true
+  if [[ "$do_chown" == "1" ]]; then
+    chown -R 0:0 "$stage"
+  fi
+}
+
+# Fingerprint of memory files only (paths relative to the snapshot).
+# MANIFEST.txt is metadata and is excluded so a rewrite of it does not look like a memory change.
+_memory_snapshot_hash() {
+  local dir="${1:?}" out="${2:?}"
+  : >"$out"
+  [[ -d "$dir" ]] || return 0
+  (
+    cd "$dir" || exit 0
+    find . -type f ! -name MANIFEST.txt -print0 | sort -z | xargs -r -0 sha256sum
+  ) >"$out"
+}
+
+# True when the app dir has SOUL.md or a non-lock file under memories/.
+_app_has_memory_files() {
+  local app="${1:?}"
+  if [[ -r "$app" && -x "$app" ]]; then
+    [[ -f "$app/SOUL.md" ]] && return 0
+    [[ -d "$app/memories" ]] && find "$app/memories" -type f ! -name '*.lock' -print -quit | grep -q .
+    return
+  fi
+  if command -v podman >/dev/null 2>&1; then
+    if podman unshare bash -c '
+      app="$1"
+      if [[ -f "$app/SOUL.md" ]]; then exit 0; fi
+      if [[ -d "$app/memories" ]] && find "$app/memories" -type f ! -name "*.lock" -print -quit | grep -q .; then
+        exit 0
+      fi
+      exit 1
+    ' _ "$app"; then
+      return 0
+    fi
+    return 1
+  fi
+  return 1
+}
+
+# Caps match infra/cleanup-disk-space-weekly.sh, which is the weekly backstop.
+# HERMES_MEMORY_BACKUP_KEEP=30
+# HERMES_MEMORY_BACKUP_RETENTION_DAYS=90
+# HERMES_MEMORY_BACKUP_MAX_BYTES=67108864  (64 MiB)
+_memory_snapshot_bytes() {
+  local path="${1:?}" bytes sha
+  bytes="$(du -sb "$path" 2>/dev/null | awk '{print $1}')"
+  [[ "$bytes" =~ ^[0-9]+$ ]] || bytes=0
+  if [[ -f "${path}.sha256" ]]; then
+    sha="$(stat -c '%s' "${path}.sha256" 2>/dev/null || echo 0)"
+    [[ "$sha" =~ ^[0-9]+$ ]] || sha=0
+    bytes=$((bytes + sha))
+  fi
+  printf '%s' "$bytes"
+}
+
+_memory_snapshot_protected() {
+  local path="${1:?}" newest="${2:?}" latest="${3:-}"
+  [[ "$path" == "$newest" ]] && return 0
+  [[ -n "$latest" && "$path" == "$latest" ]] && return 0
+  return 1
+}
+
+_list_memory_snapshots() {
+  local dest="${1:?}"
+  find "$dest" -mindepth 1 -maxdepth 1 -type d \
+    -regextype posix-extended \
+    -regex '.*/[0-9]{8}T[0-9]+Z(-[0-9]+)?$' 2>/dev/null | sort
+}
+
+_prune_memory_backups() {
+  local dest="${1:?}"
+  local keep="${HERMES_MEMORY_BACKUP_KEEP:-30}"
+  local max_bytes="${HERMES_MEMORY_BACKUP_MAX_BYTES:-67108864}"
+  local retention_days="${HERMES_MEMORY_BACKUP_RETENTION_DAYS:-90}"
+  local -a snaps=() kept=()
+  local s latest="" newest="" victim="" i total old
+
+  [[ "$keep" =~ ^[0-9]+$ ]] || keep=30
+  (( keep < 1 )) && keep=1
+  [[ "$max_bytes" =~ ^[0-9]+$ ]] || max_bytes=67108864
+  [[ "$retention_days" =~ ^[0-9]+$ ]] || retention_days=90
+
+  # Abandoned staging dirs from a crashed backup. Leave a fresh one alone.
+  find "$dest" -mindepth 1 -maxdepth 1 -type d -name '.staging-*' -mmin +60 \
+    -exec rm -rf {} + 2>/dev/null || true
+
+  while IFS= read -r s; do
+    [[ -n "$s" ]] || continue
+    snaps+=("$s")
+  done < <(_list_memory_snapshots "$dest")
+  (( ${#snaps[@]} == 0 )) && return 0
+
+  newest="${snaps[${#snaps[@]}-1]}"
+  if [[ -L "$dest/LATEST" || -e "$dest/LATEST" ]]; then
+    latest="$(readlink -f "$dest/LATEST" 2>/dev/null || true)"
+  fi
+
+  kept=()
+  for s in "${snaps[@]}"; do
+    if _memory_snapshot_protected "$s" "$newest" "$latest"; then
+      kept+=("$s")
+      continue
+    fi
+    old="$(find "$s" -maxdepth 0 -mtime "+${retention_days}" -print -quit 2>/dev/null || true)"
+    if [[ -n "$old" ]]; then
+      rm -rf "$s"
+      rm -f "${s}.sha256"
+      continue
+    fi
+    kept+=("$s")
+  done
+  snaps=("${kept[@]}")
+
+  while (( ${#snaps[@]} > keep )); do
+    victim=""
+    for (( i=0; i<${#snaps[@]}; i++ )); do
+      if ! _memory_snapshot_protected "${snaps[$i]}" "$newest" "$latest"; then
+        victim="${snaps[$i]}"
+        unset 'snaps[i]'
+        snaps=("${snaps[@]}")
+        break
+      fi
+    done
+    [[ -n "$victim" ]] || break
+    rm -rf "$victim"
+    rm -f "${victim}.sha256"
+  done
+
+  while (( ${#snaps[@]} > 1 )); do
+    total=0
+    for s in "${snaps[@]}"; do
+      total=$((total + $(_memory_snapshot_bytes "$s")))
+    done
+    (( total <= max_bytes )) && break
+    victim=""
+    for (( i=0; i<${#snaps[@]}; i++ )); do
+      if ! _memory_snapshot_protected "${snaps[$i]}" "$newest" "$latest"; then
+        victim="${snaps[$i]}"
+        unset 'snaps[i]'
+        snaps=("${snaps[@]}")
+        break
+      fi
+    done
+    [[ -n "$victim" ]] || break
+    rm -rf "$victim"
+    rm -f "${victim}.sha256"
+  done
+
+  while IFS= read -r s; do
+    [[ -n "$s" ]] || continue
+    [[ -d "${s%.sha256}" ]] || rm -f "$s"
+  done < <(find "$dest" -mindepth 1 -maxdepth 1 -type f -name '*.sha256' ! -name 'LATEST.sha256' 2>/dev/null || true)
+}
+
+# Snapshot agent memory outside the app dir.
+# Restart and image pull do not touch these files (bind mount). This copy
+# survives nuke and a bad in-place rewrite of MEMORY.md / USER.md / SOUL.md.
+# Skips the write when the fingerprint matches the latest snapshot.
+# reason: manual | start | stop | nuke
+backup_agent_memory() {
+  local reason="${1:-manual}"
+  local app dest stamp stage sha
+  app="$(hermes_app_dir)"
+  dest="$(hermes_memory_backup_dir)"
+  if [[ ! -d "$app" ]]; then
+    if [[ "$reason" == "manual" || "$reason" == "nuke" ]]; then
+      echo "No app dir at ${app} — nothing to back up"
+    fi
+    return 0
+  fi
+  mkdir -p "$dest"
+  chmod 700 "$dest"
+  find "$dest" -mindepth 1 -maxdepth 1 -type d -name '.staging-*' -exec rm -rf {} + || true
+  # Nanoseconds plus a numeric suffix so two backups in the same second
+  # cannot rm the snapshot just written.
+  stamp="$(date -u +%Y%m%dT%H%M%S%NZ)"
+  if [[ "$stamp" == *N* ]]; then
+    stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  fi
+  local n=2
+  while [[ -e "${dest}/${stamp}" || -e "${dest}/${stamp}.sha256" ]]; do
+    stamp="${stamp%-*}-${n}"
+    n=$((n + 1))
+  done
+  stage="${dest}/.staging-${stamp}-$$"
+  sha="${stage}.sha256"
+  [[ "$stage" == "$dest/.staging-"* ]] || return 1
+  rm -rf "$stage" "$sha"
+  mkdir -p "$stage"
+  chmod 700 "$stage"
+
+  if [[ -r "$app" && -x "$app" ]]; then
+    _memory_snapshot_copy "$app" "$stage" 0
+  elif command -v podman >/dev/null 2>&1; then
+    # Gateway owns the tree as container UID 10000 while it is running.
+    export -f _memory_snapshot_copy
+    podman unshare bash -c '_memory_snapshot_copy "$1" "$2" "$3"' _ "$app" "$stage" 1
+  else
+    echo "Cannot read ${app} (podman unshare unavailable)" >&2
+    rm -rf "$stage"
+    return 1
+  fi
+  if ! chmod -R u+rwX,go-rwx "$stage"; then
+    echo "Memory snapshot is not readable by the host user: ${stage}" >&2
+    rm -rf "$stage"
+    return 1
+  fi
+
+  printf 'reason: %s\nsource: %s\ncreated: %s\n' "$reason" "$app" "$stamp" >"$stage/MANIFEST.txt"
+  chmod 600 "$stage/MANIFEST.txt"
+  _memory_snapshot_hash "$stage" "$sha"
+  chmod 600 "$sha"
+  if [[ ! -s "$sha" ]]; then
+    rm -rf "$stage" "$sha"
+    if _app_has_memory_files "$app"; then
+      echo "Agent memory exists in ${app} but the snapshot was empty" >&2
+      return 1
+    fi
+    if [[ "$reason" == "manual" || "$reason" == "nuke" ]]; then
+      echo "No agent memory files under ${app}/memories or ${app}/SOUL.md"
+    fi
+    return 0
+  fi
+
+  if [[ -f "$dest/LATEST.sha256" && -d "$dest/LATEST" ]] && cmp -s "$sha" "$dest/LATEST.sha256"; then
+    rm -rf "$stage" "$sha"
+    echo "Agent memory unchanged. Latest copy: ${dest}/LATEST"
+    return 0
+  fi
+
+  rm -rf "${dest:?}/${stamp}"
+  mv "$stage" "${dest}/${stamp}"
+  mv "$sha" "${dest}/${stamp}.sha256"
+  cp -a "${dest}/${stamp}.sha256" "${dest}/LATEST.sha256"
+  ln -sfn "$stamp" "${dest}/LATEST"
+  chmod 700 "${dest}/${stamp}"
+  _prune_memory_backups "$dest"
+  echo "Agent memory backup: ${dest}/${stamp}"
+}
+
+# Copy a snapshot back into the app dir. Refuses while the gateway is running.
+# $1 is LATEST or a timestamp id (YYYYMMDDTHHMMSSZ).
+restore_agent_memory() {
+  local which="${1:-LATEST}"
+  local root snap app name f rel
+  root="$(hermes_memory_backup_dir)"
+  if [[ "$which" == "LATEST" ]]; then
+    snap="${root}/LATEST"
+  else
+    snap="${root}/${which}"
+  fi
+  if [[ ! -d "$snap" ]]; then
+    echo "No agent memory backup at ${snap}" >&2
+    return 1
+  fi
+  # Resolve the symlink so messages show the timestamp, not only LATEST.
+  snap="$(readlink -f "$snap")"
+  name="${HERMES_CONTAINER:-hermes}"
+  if command -v podman >/dev/null 2>&1 && container_is_running "$name"; then
+    echo "Stop the gateway before restoring memory: ./hermes.sh stop" >&2
+    return 1
+  fi
+  app="$(hermes_app_dir)"
+  mkdir -p "$app/memories"
+  restore_app_ownership || true
+  if [[ -d "$snap/memories" ]]; then
+    while IFS= read -r -d '' f; do
+      rel="${f#"$snap/memories"/}"
+      mkdir -p "$app/memories/$(dirname -- "$rel")"
+      cp -a "$f" "$app/memories/$rel"
+    done < <(find "$snap/memories" -type f -print0)
+  fi
+  if [[ -f "$snap/SOUL.md" ]]; then
+    cp -a "$snap/SOUL.md" "$app/SOUL.md"
+  fi
+  echo "Restored agent memory from ${snap} into ${app}"
 }
 
 # IdentyClaw: secrets + skill under app dir; helper code stays in synced repo.
@@ -1355,6 +1665,8 @@ stop_hermes_pod_stack() {
   pod_name="${HERMES_POD:-hermes-agent-pod}"
   podman stop "$auth_name" 2>/dev/null || true
   podman rm -f "$auth_name" 2>/dev/null || true
+  podman stop "${HERMES_CAMOFOX_CONTAINER:-hermes-camofox}" 2>/dev/null || true
+  podman rm -f "${HERMES_CAMOFOX_CONTAINER:-hermes-camofox}" 2>/dev/null || true
   podman stop "$name" 2>/dev/null || true
   podman rm -f "$name" 2>/dev/null || true
   podman stop "$nginx_name" 2>/dev/null || true

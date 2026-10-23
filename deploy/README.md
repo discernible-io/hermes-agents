@@ -15,8 +15,9 @@ can sync this checkout without carrying runtime state.
 | `~/hermes-identyclaw-webhooks/` or `~/hermes-identyclaw-webhook/` | Sibling: RODiT `/hooks/*` plugin (`identyclaw-webhooks`) |
 | `~/hermes-agents/deploy/` | Podman scripts, `idcp/`, nginx sidecar, IdentyClaw skill |
 | `~/hermes-agents-app/` | Runtime home (mounted at `/opt/data`) — `env.local`, `.env`, `config.yaml`, `skills/`, `memories/`, `sessions/` |
+| `~/hermes-agents-app-memory-backups/` | Copies of `memories/` and `SOUL.md` (outside the app dir, so `nuke` cannot delete them) |
 
-Override the app root with `HERMES_APP_DIR=/custom/path`.
+Override the app root with `HERMES_APP_DIR=/custom/path`. Memory backup location: `HERMES_MEMORY_BACKUP_DIR`. Each new snapshot is capped immediately, and `~/infra/cleanup-disk-space-weekly.sh` applies the same cap every Sunday: keep 30 newest (`HERMES_MEMORY_BACKUP_KEEP`), drop copies older than 90 days (`HERMES_MEMORY_BACKUP_RETENTION_DAYS`), and stay under 64 MiB (`HERMES_MEMORY_BACKUP_MAX_BYTES`). The newest snapshot and `LATEST` are always kept.
 
 ## Secret and layout map
 
@@ -47,7 +48,15 @@ chmod +x hermes.sh
 ```
 
 `init` never overwrites an existing `env.local`. To replace the whole `-app`
-directory, use `./hermes.sh nuke` (type the basename, or `--yes`).
+directory, use `./hermes.sh nuke` (type the basename, or `--yes`). Nuke copies
+`memories/` and `SOUL.md` to `~/hermes-agents-app-memory-backups/` first and
+refuses to delete the app dir if that copy fails.
+
+Restart and `./hermes.sh pull` do not wipe memory. Those files live on the host
+bind mount (`~/hermes-agents-app/memories/`, `SOUL.md`), not in the image.
+`start` and `stop` refresh the external copy when the files changed.
+`./hermes.sh restore-memory` copies a snapshot back; the gateway must be stopped.
+`restore-memory 20261022T084700Z` picks one snapshot instead of `LATEST`.
 
 Run **setup and start as separate commands** (do not chain them). Setup is
 interactive: Hermes API/keys first, then Passport fields, then an **automatic**
@@ -67,9 +76,11 @@ AlmaLinux / RHEL: `podman-restart.service` only restarts containers with policy 
 | `./hermes.sh init` | App layout + pull image (`env.local` only if missing; never overwrites) |
 | `./hermes.sh nuke [--yes]` | Delete `-app` and re-seed from templates (overwrites) |
 | `./hermes.sh setup` | Wizard + mail/Passport; NEAR enroll; self-signed TLS last |
-| `./hermes.sh start` | Recreate gateway container |
-| `./hermes.sh stop` | Stop and remove container |
+| `./hermes.sh start` | Recreate gateway container (snapshots memory first) |
+| `./hermes.sh stop` | Stop and remove container (snapshots memory first) |
 | `./hermes.sh status` | Paths + container status |
+| `./hermes.sh backup-memory` | Copy `memories/` and `SOUL.md` outside the app dir |
+| `./hermes.sh restore-memory [id]` | Copy a snapshot back (gateway must be stopped) |
 | `./hermes.sh logs` | Follow container logs |
 | `./hermes.sh pull` | Pull newer image (then `start`) |
 | `./hermes.sh chat` | Ephemeral interactive CLI against the app dir |

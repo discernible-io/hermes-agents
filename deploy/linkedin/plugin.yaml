@@ -1,0 +1,18 @@
+name: linkedin
+label: LinkedIn
+version: 0.1.0
+manifest_version: 2
+api_version: 1
+description: >
+  Official LinkedIn API for this Hermes deployment. Calls api.linkedin.com
+  with LINKEDIN_ACCESS_TOKEN from the environment. Not ClawLink and not a
+  Nous Portal connector.
+author: Discernible IO
+license: Apache-2.0
+tags: [linkedin, profile]
+provides_tools:
+  - linkedin_profile
+  - linkedin_api
+requires_env:
+  - LINKEDIN_ACCESS_TOKEN
+optional_env: []

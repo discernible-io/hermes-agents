@@ -11,6 +11,8 @@
 #   ./hermes.sh start
 #   ./hermes.sh stop
 #   ./hermes.sh status
+#   ./hermes.sh backup-memory          # snapshot memories/ + SOUL.md outside the app dir
+#   ./hermes.sh restore-memory [id]    # copy a snapshot back (gateway must be stopped)
 #   ./hermes.sh logs
 #   ./hermes.sh pull
 #   ./hermes.sh chat
@@ -37,7 +39,7 @@ HERMES_REPO="$(cd "${HERMES_ROOT}/.." && pwd)"
 source "$HERMES_ROOT/scripts/lib.sh"
 
 usage() {
-  sed -n '2,30p' "$0" | sed 's/^# \?//'
+  sed -n '2,32p' "$0" | sed 's/^# \?//'
 }
 
 identyclaw_peer_enabled() {
@@ -96,6 +98,61 @@ identyclaw_webhooks_pkg() {
 
 identyclaw_auth_container() {
   printf '%s' "${HERMES_IDENTYCLAW_AUTH_CONTAINER:-hermes-identyclaw-auth}"
+}
+
+camofox_container() {
+  printf '%s' "${HERMES_CAMOFOX_CONTAINER:-hermes-camofox}"
+}
+
+# Persistent browser for sites the LinkedIn app token cannot operate (feed,
+# messages, profile edits). noVNC is published on loopback only; the control
+# API stays inside the pod network namespace.
+start_camofox_container() {
+  local state z name image passfile
+  state="${HERMES_CAMOFOX_STATE:-${HOME}/.local/share/hermes-camofox}"
+  z="$(selinux_mount_suffix)"
+  name="$(camofox_container)"
+  image="${HERMES_CAMOFOX_IMAGE:-ghcr.io/jo-inc/camofox-browser:1.18.1}"
+  mkdir -p "$state"
+  chmod 700 "$state"
+  passfile="${state}/vnc-password"
+  if [[ ! -s "$passfile" ]]; then
+    umask 077
+    openssl rand -base64 18 >"$passfile"
+  fi
+  chmod 600 "$passfile"
+  umask 077
+  printf 'CAMOFOX_PORT=9377\nENABLE_VNC=1\nVNC_BIND=0.0.0.0\nBROWSER_IDLE_TIMEOUT_MS=0\nVNC_PASSWORD=%s\n' "$(tr -d '\n' <"$passfile")" >"${state}/camofox.env"
+  chmod 600 "${state}/camofox.env"
+  if ! podman image exists "$image" 2>/dev/null; then
+    echo "Pulling ${image} ..."
+    podman pull "$image"
+  fi
+  podman rm -f "$name" 2>/dev/null || true
+  podman run -d --replace \
+    --pod "${HERMES_POD}" \
+    --name "$name" \
+    --restart always \
+    --env-file "${state}/camofox.env" \
+    -v "${state}:/root/.camofox:rw${z}" \
+    "$image"
+  # Camoufox disables the X RENDER extension, which leaves noVNC on a black screen.
+  podman exec "$name" python3 -c '
+from pathlib import Path
+p = Path("/app/node_modules/camoufox-js/dist/virtdisplay.js")
+text = p.read_text()
+old = "\n".join(["            \"-extension\",", "            \"RENDER\","])
+new = "\n".join(["            \"+extension\",", "            \"RENDER\","])
+if old in text:
+    p.write_text(text.replace(old, new, 1))
+    print("render-enabled")
+elif new in text:
+    print("render-already-enabled")
+else:
+    raise SystemExit("virtdisplay.js RENDER flag not found")
+'
+  podman restart "$name" >/dev/null
+  echo "Camofox browser in pod ${HERMES_POD} (noVNC 127.0.0.1:${HERMES_CAMOFOX_NOVNC_PORT:-6080})"
 }
 
 # Auth sidecar shares the gateway network namespace (localhost-only bind). Sidecar
@@ -265,7 +322,10 @@ cmd_start_pod() {
   podman pod create \
     --name "$HERMES_POD" \
     -p "${HERMES_INGRESS_PORT}:${HERMES_INGRESS_PORT}" \
-    -p "${HERMES_API_PORT}:8642"
+    -p "${HERMES_API_PORT}:8642" \
+    -p "127.0.0.1:${HERMES_CAMOFOX_NOVNC_PORT:-6080}:6080"
+
+  start_camofox_container
 
   hermes_gateway_run_args args
   args+=(--pod "$HERMES_POD")
@@ -341,6 +401,11 @@ cmd_start() {
   # Peer flag must be snapshotted before chown hides the 0700 app tree from the host.
   identyclaw_peer_snapshot
 
+  # Memory lives on the bind mount, so recreate does not delete it. Keep a
+  # second copy outside the app dir in case this start is followed by nuke
+  # or an in-place rewrite of MEMORY.md.
+  backup_agent_memory start || echo "Warning: agent memory backup failed; live files are still in $(hermes_app_dir)" >&2
+
   prepare_app_for_container
 
   if hermes_is_pod_mode; then
@@ -408,6 +473,10 @@ cmd_nuke() {
   fi
   if [[ -e "$app" ]]; then
     confirm_app_nuke "$app" "$yes" || { echo "aborted"; exit 1; }
+    if ! backup_agent_memory nuke; then
+      echo "Refusing to delete ${app}: could not copy agent memory outside the app dir." >&2
+      exit 1
+    fi
     if command -v podman >/dev/null 2>&1; then
       cmd_stop >/dev/null 2>&1 || true
     fi
@@ -981,9 +1050,19 @@ cmd_idcp() {
   fi
 }
 
+cmd_backup_memory() {
+  backup_agent_memory manual
+}
+
+cmd_restore_memory() {
+  load_env
+  restore_agent_memory "${1:-LATEST}"
+}
+
 cmd_stop() {
   require_podman
   load_env
+  backup_agent_memory stop || echo "Warning: agent memory backup failed; live files are still in $(hermes_app_dir)" >&2
   if hermes_is_pod_mode || podman pod exists "${HERMES_POD:-hermes-agent-pod}" 2>/dev/null; then
     stop_hermes_pod_stack
     echo "Stopped pod ${HERMES_POD:-hermes-agent-pod}"
@@ -1001,6 +1080,13 @@ cmd_status() {
   load_env
   echo "Repo:    $HERMES_ROOT"
   echo "App dir: $(hermes_app_dir)"
+  local membackup
+  membackup="$(hermes_memory_backup_dir)"
+  if [[ -d "${membackup}/LATEST" ]]; then
+    echo "Memory:  ${membackup}/LATEST"
+  else
+    echo "Memory:  no backup yet (./hermes.sh backup-memory)"
+  fi
   echo "Image:   ${HERMES_IMAGE:-?(run init)}"
   echo "Mode:    ${HERMES_DEPLOY_MODE:-standalone}"
   if hermes_is_pod_mode || podman pod exists "${HERMES_POD:-hermes-agent-pod}" 2>/dev/null; then
@@ -1180,6 +1266,8 @@ main() {
     start) cmd_start "$@" ;;
     stop) cmd_stop "$@" ;;
     status) cmd_status "$@" ;;
+    backup-memory) cmd_backup_memory "$@" ;;
+    restore-memory) cmd_restore_memory "$@" ;;
     logs) cmd_logs "$@" ;;
     pull) cmd_pull "$@" ;;
     chat) cmd_chat "$@" ;;
