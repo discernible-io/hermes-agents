@@ -1,9 +1,11 @@
 # Pinned base (tag + manifest-list digest). Bump both when upgrading nginx.
-FROM docker.io/nginx:1.31.3-alpine@sha256:4a73073bd557c65b759505da037898b61f1be6cbcc3c2c3aeac22d2a470c1752
+FROM docker.io/nginx:1.31.7-alpine@sha256:892bb2152464f0c5d8972593a5f5afaf8054552580b699d95f8ff4af08c2d33d
 
 ARG INGRESS_PORT=8443
 
-RUN apk add --no-cache openssl \
+# apk upgrade pulls Alpine security fixes (e.g. brotli-libs CVE-2026-111497 → 1.2.1-r0).
+RUN apk update && apk upgrade --no-cache \
+ && apk add --no-cache openssl \
  && rm /etc/nginx/conf.d/default.conf \
  && mkdir -p /app/certs /etc/nginx/inc
 
