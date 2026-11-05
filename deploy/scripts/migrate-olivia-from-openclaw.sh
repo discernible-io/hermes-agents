@@ -260,6 +260,10 @@ take("IDENTYCLAW_A2A_AUTH", "passport-jwt")
 take("IDENTYCLAW_JWT_ISSUER", "https://api.identyclaw.com")
 # Olivia NEAR account id is the JWT audience for inbound peers
 take("IDENTYCLAW_JWT_AUDIENCE", "5f451f161793275f03b82ee3cdb93d75ec57d90878d9aaff0d5bcd5a457d488e")
+# Never keep OpenClaw workspace paths — terminal/shell cd would fail on Hermes.
+for stale in ("MESSAGING_CWD", "TERMINAL_CWD", "OPENCLAW_HOME", "OPENCLAW_STATE_DIR"):
+    existing.pop(stale, None)
+existing["MESSAGING_CWD"] = "/opt/data"
 # Generate webhook secret if missing
 import secrets
 if not existing.get("WEBHOOK_SECRET", "").strip():

@@ -29,6 +29,7 @@
 #   ./hermes.sh build-nginx
 #   ./hermes.sh -p olivia|default|all start|stop|status
 #   ./hermes.sh migrate-olivia [--dry-run] [--cutover]
+#   ./hermes.sh migrate-cornelius [--dry-run] [--cutover]
 
 set -euo pipefail
 [[ "${TRACE:-0}" == 1 ]] && set -x
@@ -1309,8 +1310,12 @@ cmd_migrate_olivia() {
   bash "${HERMES_ROOT}/scripts/migrate-olivia-from-openclaw.sh" "$@"
 }
 
+cmd_migrate_cornelius() {
+  bash "${HERMES_ROOT}/scripts/migrate-cornelius-from-openclaw.sh" "$@"
+}
+
 # Optional leading profile selector: ./hermes.sh [-p PROFILE|all] <cmd> …
-# Also accepts legacy OpenClaw ids (agent-b → olivia, agent-l → default).
+# Also accepts legacy OpenClaw ids (agent-b → olivia, agent-c → cornelius, agent-l → default).
 main() {
   local cmd profile_arg=""
   while [[ $# -gt 0 ]]; do
@@ -1336,7 +1341,7 @@ main() {
     start|stop|status|logs)
       if [[ -z "$profile_arg" && -n "${1:-}" ]]; then
         case "$1" in
-          all|default|olivia|agent-b|agent-l|lemuel)
+          all|default|olivia|cornelius|agent-b|agent-c|agent-l|lemuel)
             profile_arg="$1"
             shift || true
             ;;
@@ -1392,6 +1397,7 @@ main() {
     generate-certs) cmd_generate_certs "$@" ;;
     build-nginx) cmd_build_nginx "$@" ;;
     migrate-olivia) cmd_migrate_olivia "$@" ;;
+    migrate-cornelius) cmd_migrate_cornelius "$@" ;;
     -h|--help|help|"") usage ;;
     *)
       echo "Unknown command: $cmd" >&2

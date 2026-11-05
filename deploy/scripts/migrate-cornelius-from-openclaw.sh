@@ -1,0 +1,414 @@
+#!/usr/bin/env bash
+# Migrate OpenClaw agent-c (Cornelius) → Hermes profile "cornelius".
+# - Uses Hermes-native homes/<name>/ (not OpenClaw agents/agent-*).
+# - Never writes into the default (Lemuel) profile home secrets/.env.
+# - Secrets: create-only / fill-empty.
+# - Memory/persona: hermes claw migrate --preset user-data (no --migrate-secrets).
+set -euo pipefail
+
+HERMES_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib.sh
+source "${HERMES_ROOT}/scripts/lib.sh"
+
+OPENCLAW_APP="${OPENCLAW_APP_DIR:-$HOME/openclaw-agents-app}"
+OPENCLAW_SRC="${OPENCLAW_AGENT_C:-${OPENCLAW_AGENT_B:-${OPENCLAW_APP}/agents/agent-c}}"
+OPENCLAW_CTR="${OPENCLAW_AGENT_C_CONTAINER:-${OPENCLAW_AGENT_B_CONTAINER:-openclaw-agent-c}}"
+PROFILE_ID=cornelius
+NEAR_ID=39abb408ce32a27a1e106686e8cddbceef6352771ba2f425673a5c68cabb6e03
+PUBLIC_HOST=cornelius.dihola.io
+DRY_RUN=0
+DO_CUTOVER=0
+
+usage() {
+  cat <<EOF
+Usage: migrate-cornelius-from-openclaw.sh [--dry-run] [--cutover]
+
+  --dry-run   Print actions only
+  --cutover   After seeding, stop OpenClaw agent-c + openclaw-nginx and
+              start Hermes cornelius in identyclaw-agents-pod (takes :8443)
+EOF
+}
+
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run) DRY_RUN=1 ;;
+    --cutover) DO_CUTOVER=1 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown arg: $arg" >&2; usage; exit 1 ;;
+  esac
+done
+
+run() {
+  if [[ "$DRY_RUN" == "1" ]]; then
+    echo "DRY: $*"
+  else
+    "$@"
+  fi
+}
+
+echo "==> Cornelius migration (OpenClaw agent-c → Hermes profile cornelius)"
+echo "    OpenClaw source: ${OPENCLAW_SRC} (container ${OPENCLAW_CTR})"
+echo "    Fleet:           $(hermes_fleet_dir)"
+
+load_fleet_env_only
+fleet="$(hermes_fleet_dir)"
+home="$(profile_home "$PROFILE_ID")"
+
+# --- 1. Fleet env knobs (non-secrets, no overwrite of existing keys) --------
+fleet_env="${fleet}/env.local"
+if [[ "$DRY_RUN" == "0" ]]; then
+  # Host may need sudo to create under 0700 hermes-owned tree.
+  if [[ ! -w "$fleet" ]]; then
+    echo "Fleet dir not writable by $(id -un): ${fleet}" >&2
+    echo "Stop Lemuel briefly and reclaim, or run with sudo for seeding:" >&2
+    echo "  cd ${HERMES_ROOT} && ./hermes.sh stop default && ./hermes.sh own host" >&2
+    echo "  # then re-run this script; finally: ./hermes.sh start default" >&2
+    exit 1
+  fi
+fi
+
+run mkdir -p "${fleet}/homes"
+run ensure_profile_home "$PROFILE_ID"
+
+if [[ "$DRY_RUN" == "0" ]]; then
+  touch "$fleet_env"
+  chmod 600 "$fleet_env" 2>/dev/null || true
+  # PROFILE_IDS / AGENT_IDS
+  if ! grep -qE '^PROFILE_IDS=' "$fleet_env" 2>/dev/null; then
+    if grep -qE '^AGENT_IDS=' "$fleet_env" 2>/dev/null; then
+      :
+    else
+      printf '\n# Multi-profile (Hermes-native). default=Lemuel, cornelius=Cornelius\nPROFILE_IDS="default cornelius"\n' >>"$fleet_env"
+    fi
+  fi
+  envfile_set_if_empty "$fleet_env" AGENT_C_EMAIL "cornelius@agenthood.me"
+  envfile_set_if_empty "$fleet_env" AGENT_C_DISPLAY_NAME "Cornelius"
+  envfile_set_if_empty "$fleet_env" AGENT_C_PUBLIC_HOST "$PUBLIC_HOST"
+  envfile_set_if_empty "$fleet_env" AGENT_C_INGRESS_PORT "8443"
+  envfile_set_if_empty "$fleet_env" AGENT_C_API_PORT "11643"
+  envfile_set_if_empty "$fleet_env" AGENT_C_DEPLOY_MODE "pod"
+  envfile_set_if_empty "$fleet_env" AGENT_C_SMTP_PORT "587"
+  envfile_set_if_empty "$fleet_env" AGENT_C_SMTP_ENCRYPTION "start-tls"
+  envfile_set_if_empty "$fleet_env" AGENT_C_JOIN_POD "identyclaw-agents-pod"
+  # Unique internal ports if ever co-located; in joined pod OpenClaw uses 187xx.
+  envfile_set_if_empty "$fleet_env" AGENT_C_A2A_PORT "9900"
+  envfile_set_if_empty "$fleet_env" AGENT_C_AUTH_PORT "9910"
+  envfile_set_if_empty "$fleet_env" AGENT_C_HOOKS_PORT "9911"
+  envfile_set_if_empty "$fleet_env" AGENT_C_WEBHOOK_PORT "8644"
+  # No OPENCLAW_PROXY_UPSTREAMS — John/Jay are stopped on this host.
+fi
+
+# Profile-local non-secrets
+prof_env="${home}/env.local"
+if [[ "$DRY_RUN" == "0" ]]; then
+  touch "$prof_env"
+  chmod 600 "$prof_env"
+  envfile_set_if_empty "$prof_env" HERMES_EMAIL "cornelius@agenthood.me"
+  envfile_set_if_empty "$prof_env" HERMES_EMAIL_DISPLAY_NAME "Cornelius"
+  envfile_set_if_empty "$prof_env" HERMES_PUBLIC_HOST "$PUBLIC_HOST"
+  envfile_set_if_empty "$prof_env" HERMES_INGRESS_PORT "8443"
+  envfile_set_if_empty "$prof_env" HERMES_API_PORT "11643"
+  envfile_set_if_empty "$prof_env" HERMES_DEPLOY_MODE "pod"
+  envfile_set_if_empty "$prof_env" HERMES_SMTP_PORT "587"
+  envfile_set_if_empty "$prof_env" HERMES_SMTP_ENCRYPTION "start-tls"
+  envfile_set_if_empty "$prof_env" WEBHOOK_ENABLED "true"
+  envfile_set_if_empty "$prof_env" WEBHOOK_PORT "8644"
+  envfile_set_if_empty "$prof_env" A2A_PUBLIC_URL "https://${PUBLIC_HOST}:8443"
+  envfile_set_if_empty "$prof_env" IDENTYCLAW_WEBHOOK_URL "https://${PUBLIC_HOST}:8443"
+  envfile_set_if_empty "$prof_env" IDENTYCLAW_CONTACT_URI "email:agenthood.me:cornelius@agenthood.me"
+fi
+
+# --- 2. File secrets via running OpenClaw container (mode 0700 on host) ------
+echo "==> Copying file secrets (create-only)"
+copy_via_ctr() {
+  local src_in_ctr="$1" dst_host="$2"
+  if [[ -s "$dst_host" ]]; then
+    echo "  keep existing ${dst_host}"
+    return 0
+  fi
+  if [[ "$DRY_RUN" == "1" ]]; then
+    echo "DRY: podman cp ${OPENCLAW_CTR}:${src_in_ctr} → ${dst_host}"
+    return 0
+  fi
+  mkdir -p "$(dirname "$dst_host")"
+  if podman cp "${OPENCLAW_CTR}:${src_in_ctr}" "$dst_host" 2>/dev/null; then
+    chmod 600 "$dst_host" 2>/dev/null || true
+    echo "  copied $(basename "$dst_host")"
+  else
+    echo "  WARN: missing ${src_in_ctr}" >&2
+  fi
+}
+
+OC=/home/node/.openclaw
+run mkdir -p "${home}/secrets/near-credentials" "${home}/secrets/identyclaw" "${home}/secrets/himalaya"
+copy_via_ctr "${OC}/secrets/near-credentials/${NEAR_ID}.json" \
+  "${home}/secrets/near-credentials/${NEAR_ID}.json"
+copy_via_ctr "${OC}/secrets/near-credentials/.active" "${home}/secrets/near-credentials/.active"
+copy_via_ctr "${OC}/secrets/identyclaw/sessions.json" "${home}/secrets/identyclaw/sessions.json"
+copy_via_ctr "${OC}/secrets/identyclaw/jwt-aHR0cHM6Ly9hcGkuaWRlbnR5Y2xhdy5jb20.txt" \
+  "${home}/secrets/identyclaw/jwt-aHR0cHM6Ly9hcGkuaWRlbnR5Y2xhdy5jb20.txt"
+# Himalaya reshape
+copy_via_ctr "${OC}/secrets/imap.pass" "${home}/secrets/himalaya/imap.pass"
+copy_via_ctr "${OC}/secrets/smtp.pass" "${home}/secrets/himalaya/smtp.pass"
+if [[ "$DRY_RUN" == "0" ]]; then
+  if [[ -s "${home}/secrets/himalaya/imap.pass" && ! -f "${home}/secrets/himalaya/imap.sh" ]]; then
+    cat >"${home}/secrets/himalaya/imap.sh" <<'EOF'
+#!/bin/sh
+cat "$(dirname "$0")/imap.pass"
+EOF
+    cp -a "${home}/secrets/himalaya/imap.sh" "${home}/secrets/himalaya/smtp.sh"
+    chmod 700 "${home}/secrets/himalaya"/*.sh
+  fi
+  near_json="${home}/secrets/near-credentials/${NEAR_ID}.json"
+  if [[ -s "$near_json" ]]; then
+    printf '%s\n' "$near_json" >"${home}/secrets/near-credentials/.active"
+  fi
+fi
+
+# --- 3. .env secrets (create-only) from container .env + secret files --------
+echo "==> Seeding profile .env (create-only, never Lemuel)"
+gateway_env="${home}/.env"
+if [[ "$DRY_RUN" == "0" ]]; then
+  touch "$gateway_env"
+  chmod 600 "$gateway_env"
+fi
+
+# Pull allowlisted keys from OpenClaw .env via python in the container → host.
+if [[ "$DRY_RUN" == "0" ]]; then
+  tmp_env="$(mktemp)"
+  podman exec "$OPENCLAW_CTR" sh -c "cat ${OC}/.env" >"$tmp_env" 2>/dev/null || true
+  # Also materialize file-backed tokens into the tmp map
+  for key in TELEGRAM_BOT_TOKEN TELEGRAM_WEBHOOK_SECRET OPENROUTER_API_KEY; do
+    if podman exec "$OPENCLAW_CTR" test -f "${OC}/secrets/${key}" 2>/dev/null; then
+      val="$(podman exec "$OPENCLAW_CTR" cat "${OC}/secrets/${key}" | tr -d '\r\n')"
+      if [[ -n "$val" ]]; then
+        if grep -qE "^${key}=" "$tmp_env" 2>/dev/null; then
+          # prefer file secret if env empty
+          cur="$(grep -E "^${key}=" "$tmp_env" | tail -1 | sed "s/^${key}=//")"
+          [[ -z "$cur" ]] && sed -i "s|^${key}=.*|${key}=${val}|" "$tmp_env"
+        else
+          printf '%s=%s\n' "$key" "$val" >>"$tmp_env"
+        fi
+      fi
+    fi
+  done
+  # TELEGRAM_ALLOWED_USERS from openclaw.json allowFrom when missing
+  if ! grep -qE '^TELEGRAM_ALLOWED_USERS=.+' "$tmp_env" 2>/dev/null; then
+    allow="$(podman exec "$OPENCLAW_CTR" python3 -c "
+import json
+tg=json.load(open('${OC}/openclaw.json')).get('channels',{}).get('telegram',{})
+af=tg.get('allowFrom') or []
+print(','.join(str(x) for x in af) if isinstance(af, list) else str(af or ''))
+" 2>/dev/null || true)"
+    if [[ -n "$allow" ]]; then
+      printf 'TELEGRAM_ALLOWED_USERS=%s\n' "$allow" >>"$tmp_env"
+    fi
+  fi
+
+  python3 - "$tmp_env" "$gateway_env" "$home" "$NEAR_ID" "$PUBLIC_HOST" <<'PY'
+import pathlib, sys
+src, dst, home = map(pathlib.Path, sys.argv[1:4])
+near_id, public_host = sys.argv[4], sys.argv[5]
+allow = {
+    "TELEGRAM_BOT_TOKEN", "TELEGRAM_WEBHOOK_SECRET", "TELEGRAM_WEBHOOK_URL",
+    "TELEGRAM_ALLOWED_USERS", "TELEGRAM_HOME_CHANNEL", "TELEGRAM_HOME_CHANNEL_THREAD_ID",
+    "DISCORD_BOT_TOKEN", "DISCORD_ALLOWED_USERS",
+    "OPENROUTER_API_KEY", "WEBHOOK_SECRET", "WEBHOOK_ENABLED", "WEBHOOK_PORT",
+    "HERMES_GATEWAY_TOKEN", "API_SERVER_KEY",
+    "IDENTYCLAW_JWT_AUDIENCE", "IDENTYCLAW_JWT_ISSUER", "IDENTYCLAW_A2A_AUTH",
+    "A2A_PUBLIC_URL", "A2A_AGENT_NAME", "A2A_HOST", "A2A_PORT",
+    "NEAR_CREDENTIALS_FILE_PATH", "RODIT_NEAR_CREDENTIALS_SOURCE",
+}
+# Map OpenClaw gateway token → Hermes
+aliases = {"OPENCLAW_GATEWAY_TOKEN": "HERMES_GATEWAY_TOKEN"}
+existing = {}
+if dst.exists():
+    for line in dst.read_text().splitlines():
+        if not line or line.lstrip().startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        existing[k] = v
+
+def take(k, v):
+    if k in existing and existing[k].strip():
+        return
+    existing[k] = v
+
+near = home / f"secrets/near-credentials/{near_id}.json"
+if src.exists():
+    for line in src.read_text().splitlines():
+        if not line or line.lstrip().startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        k = aliases.get(k, k)
+        if k not in allow and k not in aliases.values():
+            continue
+        if not v.strip():
+            continue
+        take(k, v)
+
+# Defaults / path rewrites for Hermes layout
+take("RODIT_NEAR_CREDENTIALS_SOURCE", "file")
+if near.exists():
+    take("NEAR_CREDENTIALS_FILE_PATH", str(near))
+take("TELEGRAM_WEBHOOK_URL", f"https://{public_host}:8443/telegram")
+take("WEBHOOK_ENABLED", "true")
+take("WEBHOOK_PORT", "8644")
+take("A2A_PUBLIC_URL", f"https://{public_host}:8443")
+take("A2A_HOST", "127.0.0.1")
+take("A2A_PORT", "9900")
+take("IDENTYCLAW_A2A_AUTH", "passport-jwt")
+take("IDENTYCLAW_JWT_ISSUER", "https://api.identyclaw.com")
+# Cornelius NEAR account id is the JWT audience for inbound peers
+take("IDENTYCLAW_JWT_AUDIENCE", near_id)
+# Never keep OpenClaw workspace paths — terminal/shell cd would fail on Hermes.
+for stale in ("MESSAGING_CWD", "TERMINAL_CWD", "OPENCLAW_HOME", "OPENCLAW_STATE_DIR"):
+    existing.pop(stale, None)
+existing["MESSAGING_CWD"] = "/opt/data"
+# Generate webhook secret if missing
+import secrets
+if not existing.get("WEBHOOK_SECRET", "").strip():
+    existing["WEBHOOK_SECRET"] = secrets.token_hex(32)
+if not existing.get("TELEGRAM_WEBHOOK_SECRET", "").strip():
+    existing["TELEGRAM_WEBHOOK_SECRET"] = secrets.token_hex(32)
+
+lines = [f"{k}={v}\n" for k, v in sorted(existing.items())]
+dst.write_text("".join(lines))
+dst.chmod(0o600)
+print(f"  wrote {dst} ({len(existing)} keys, create-only merge)")
+PY
+  rm -f "$tmp_env"
+fi
+
+# --- 4. Persona / memory via hermes claw migrate ----------------------------
+echo "==> Memory/persona import (hermes claw migrate --preset user-data)"
+select_profile "$PROFILE_ID"
+if [[ "$DRY_RUN" == "1" ]]; then
+  echo "DRY: HERMES_HOME=${home} hermes claw migrate --source ${OPENCLAW_SRC} --preset user-data --yes"
+else
+  # Stage a host-readable copy of the OpenClaw workspace for the migrator.
+  stage="$(mktemp -d)"
+  mkdir -p "${stage}/workspace" "${stage}/workspace/memory"
+  podman cp "${OPENCLAW_CTR}:${OC}/workspace/SOUL.md" "${stage}/workspace/SOUL.md" 2>/dev/null || true
+  podman cp "${OPENCLAW_CTR}:${OC}/workspace/USER.md" "${stage}/workspace/USER.md" 2>/dev/null || true
+  podman cp "${OPENCLAW_CTR}:${OC}/workspace/AGENTS.md" "${stage}/workspace/AGENTS.md" 2>/dev/null || true
+  podman cp "${OPENCLAW_CTR}:${OC}/workspace/IDENTITY.md" "${stage}/workspace/IDENTITY.md" 2>/dev/null || true
+  podman cp "${OPENCLAW_CTR}:${OC}/workspace/DREAMS.md" "${stage}/workspace/DREAMS.md" 2>/dev/null || true
+  # daily memory files
+  podman exec "$OPENCLAW_CTR" sh -c "ls ${OC}/workspace/memory/*.md 2>/dev/null" \
+    | while read -r f; do
+        [[ -n "$f" ]] || continue
+        base="$(basename "$f")"
+        podman cp "${OPENCLAW_CTR}:${f}" "${stage}/workspace/memory/${base}" 2>/dev/null || true
+      done
+
+  mkdir -p "${home}/migration/openclaw-archive"
+  [[ -f "${stage}/workspace/IDENTITY.md" ]] && cp -a "${stage}/workspace/IDENTITY.md" "${home}/migration/openclaw-archive/" || true
+  [[ -f "${stage}/workspace/DREAMS.md" ]] && cp -a "${stage}/workspace/DREAMS.md" "${home}/migration/openclaw-archive/" || true
+
+  # Always use a one-shot container so migrate works even while Lemuel is stopped for own host.
+  z="$(selinux_mount_suffix)"
+  image="${HERMES_IMAGE:-docker.io/nousresearch/hermes-agent:latest}"
+  if ! podman run --rm \
+      --user 10000:10000 \
+      --entrypoint hermes \
+      -v "${home}:/opt/data:rw${z}" \
+      -v "${home}:${home}:rw${z}" \
+      -v "${stage}:/import:ro${z}" \
+      -e "HERMES_HOME=/opt/data" \
+      -e "HOME=/opt/data" \
+      "$image" \
+      claw migrate --source /import --preset user-data --yes \
+      --workspace-target /opt/data/workspace; then
+    echo "WARN: claw migrate failed — copying SOUL/USER manually" >&2
+    [[ -f "${stage}/workspace/SOUL.md" && ! -f "${home}/SOUL.md" ]] && cp -a "${stage}/workspace/SOUL.md" "${home}/SOUL.md"
+    mkdir -p "${home}/memories"
+    if [[ -f "${stage}/workspace/USER.md" && ! -s "${home}/memories/USER.md" ]]; then
+      {
+        echo "Imported from OpenClaw USER.md:"
+        cat "${stage}/workspace/USER.md"
+      } >"${home}/memories/USER.md"
+      chmod 600 "${home}/memories/USER.md"
+    fi
+  fi
+  rm -rf "$stage"
+fi
+
+# Ensure gateway.standalone for Passport isolation
+if [[ "$DRY_RUN" == "0" ]]; then
+  if [[ -f "${home}/config.yaml" ]]; then
+    if ! grep -q 'standalone:' "${home}/config.yaml" 2>/dev/null; then
+      printf '\ngateway:\n  standalone: true\n' >>"${home}/config.yaml"
+    fi
+  else
+    printf 'gateway:\n  standalone: true\n' >"${home}/config.yaml"
+    chmod 600 "${home}/config.yaml"
+  fi
+fi
+
+echo "==> Seed complete for ${home}"
+
+# --- 5. Optional cutover ----------------------------------------------------
+if [[ "$DO_CUTOVER" != "1" ]]; then
+  echo ""
+  echo "Next: review ${home}/.env (no Lemuel keys touched), then:"
+  echo "  ${HERMES_ROOT}/hermes.sh migrate-cornelius --cutover"
+  echo "  # or manually:"
+  echo "  podman stop openclaw-nginx openclaw-agent-c"
+  echo "  ${HERMES_ROOT}/hermes.sh start cornelius"
+  exit 0
+fi
+
+echo "==> Cutover: stop OpenClaw agent-c + nginx; start Hermes cornelius on :8443"
+run podman stop openclaw-agent-c 2>/dev/null || true
+run podman stop openclaw-nginx 2>/dev/null || true
+run podman rm -f openclaw-nginx 2>/dev/null || true
+
+# Copy LE certs into profile if missing (SAN already covers cornelius/john/jay)
+if [[ "$DRY_RUN" == "0" ]]; then
+  if [[ ! -s "${home}/certs/fullchain.pem" && -s "${OPENCLAW_APP}/certs/fullchain.pem" ]]; then
+    mkdir -p "${home}/certs"
+    cp -a "${OPENCLAW_APP}/certs/fullchain.pem" "${home}/certs/" 2>/dev/null \
+      || podman unshare cp -a "${OPENCLAW_APP}/certs/fullchain.pem" "${home}/certs/" || true
+    cp -a "${OPENCLAW_APP}/certs/privkey.pem" "${home}/certs/" 2>/dev/null \
+      || podman unshare cp -a "${OPENCLAW_APP}/certs/privkey.pem" "${home}/certs/" || true
+  fi
+fi
+
+select_profile cornelius
+if [[ "$DRY_RUN" == "1" ]]; then
+  echo "DRY: ${HERMES_ROOT}/hermes.sh start cornelius"
+else
+  bash "${HERMES_ROOT}/hermes.sh" start cornelius
+fi
+
+# Retarget Telegram webhook to Hermes /telegram path
+if [[ "$DRY_RUN" == "0" ]]; then
+  token=""
+  if [[ -r "${home}/.env" ]]; then
+    token="$(grep -E '^TELEGRAM_BOT_TOKEN=' "${home}/.env" | tail -1 | sed 's/^TELEGRAM_BOT_TOKEN=//' | tr -d '\r')"
+  fi
+  secret=""
+  if [[ -r "${home}/.env" ]]; then
+    secret="$(grep -E '^TELEGRAM_WEBHOOK_SECRET=' "${home}/.env" | tail -1 | sed 's/^TELEGRAM_WEBHOOK_SECRET=//' | tr -d '\r')"
+  fi
+  if [[ -n "$token" ]]; then
+    echo "==> Retargeting Telegram webhook to https://${PUBLIC_HOST}:8443/telegram"
+    args=(-sS "https://api.telegram.org/bot${token}/setWebhook"
+      -d "url=https://${PUBLIC_HOST}:8443/telegram"
+      -d "allowed_updates=[]")
+    if [[ -n "$secret" ]]; then
+      args+=(-d "secret_token=${secret}")
+    fi
+    curl "${args[@]}" | python3 -c 'import sys,json; d=json.load(sys.stdin); print("  setWebhook ok=", d.get("ok"), "desc=", d.get("description","")[:120])' || \
+      echo "WARN: setWebhook failed" >&2
+  else
+    echo "WARN: TELEGRAM_BOT_TOKEN missing — set webhook manually" >&2
+  fi
+fi
+
+echo "==> Cutover done. Smoke:"
+echo "  curl -sk https://${PUBLIC_HOST}:8443/health"
+echo "  curl -sk https://hermes.dihola.io:10443/health"
+echo "  ${HERMES_ROOT}/hermes.sh -p cornelius idcp me"
+echo "  ${HERMES_ROOT}/hermes.sh -p default idcp me"

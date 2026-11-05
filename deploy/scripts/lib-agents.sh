@@ -82,22 +82,24 @@ configured_profile_ids() {
   echo "${ids:-default}"
 }
 
-# Accept agent-b / agent-l aliases from the OpenClaw-era plan.
+# Accept agent-b / agent-c / agent-l aliases from the OpenClaw-era plan.
 hermes_normalize_profile_id() {
   case "$1" in
     agent-l|lemuel|lhsrldbjsnlh) echo "default" ;;
     agent-b|olivia|olivia-tara|cdcjcfbksfbd) echo "olivia" ;;
+    agent-c|cornelius) echo "cornelius" ;;
     *) echo "$1" ;;
   esac
 }
 
-# Env prefix for fleet knobs: default → HERMES_ / AGENT_L_; olivia → AGENT_B_ / PROFILE_OLIVIA_
+# Env prefix for fleet knobs: default → HERMES_ / AGENT_L_; olivia → AGENT_B_; cornelius → AGENT_C_
 profile_env_prefix() {
   local id
   id="$(hermes_normalize_profile_id "$1")"
   case "$id" in
     default) echo "AGENT_L" ;;
     olivia) echo "AGENT_B" ;;
+    cornelius) echo "AGENT_C" ;;
     *)
       # PROFILE_OLIVIA → already; else uppercase with dashes to underscores
       printf 'PROFILE_%s' "$(echo "$id" | tr '[:lower:]-' '[:upper:]_')"
