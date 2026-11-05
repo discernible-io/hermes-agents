@@ -11,8 +11,6 @@
 #   ./hermes.sh start
 #   ./hermes.sh stop
 #   ./hermes.sh status
-#   ./hermes.sh backup-memory          # snapshot memories/ + SOUL.md outside the app dir
-#   ./hermes.sh restore-memory [id]    # copy a snapshot back (gateway must be stopped)
 #   ./hermes.sh logs
 #   ./hermes.sh pull
 #   ./hermes.sh chat
@@ -29,6 +27,8 @@
 #   ./hermes.sh himalaya-test
 #   ./hermes.sh generate-certs [--force]
 #   ./hermes.sh build-nginx
+#   ./hermes.sh -p olivia|default|all start|stop|status
+#   ./hermes.sh migrate-olivia [--dry-run] [--cutover]
 
 set -euo pipefail
 [[ "${TRACE:-0}" == 1 ]] && set -x
@@ -39,7 +39,7 @@ HERMES_REPO="$(cd "${HERMES_ROOT}/.." && pwd)"
 source "$HERMES_ROOT/scripts/lib.sh"
 
 usage() {
-  sed -n '2,32p' "$0" | sed 's/^# \?//'
+  sed -n '2,30p' "$0" | sed 's/^# \?//'
 }
 
 identyclaw_peer_enabled() {
@@ -100,61 +100,6 @@ identyclaw_auth_container() {
   printf '%s' "${HERMES_IDENTYCLAW_AUTH_CONTAINER:-hermes-identyclaw-auth}"
 }
 
-camofox_container() {
-  printf '%s' "${HERMES_CAMOFOX_CONTAINER:-hermes-camofox}"
-}
-
-# Persistent browser for sites the LinkedIn app token cannot operate (feed,
-# messages, profile edits). noVNC is published on loopback only; the control
-# API stays inside the pod network namespace.
-start_camofox_container() {
-  local state z name image passfile
-  state="${HERMES_CAMOFOX_STATE:-${HOME}/.local/share/hermes-camofox}"
-  z="$(selinux_mount_suffix)"
-  name="$(camofox_container)"
-  image="${HERMES_CAMOFOX_IMAGE:-ghcr.io/jo-inc/camofox-browser:1.18.1}"
-  mkdir -p "$state"
-  chmod 700 "$state"
-  passfile="${state}/vnc-password"
-  if [[ ! -s "$passfile" ]]; then
-    umask 077
-    openssl rand -base64 18 >"$passfile"
-  fi
-  chmod 600 "$passfile"
-  umask 077
-  printf 'CAMOFOX_PORT=9377\nENABLE_VNC=1\nVNC_BIND=0.0.0.0\nBROWSER_IDLE_TIMEOUT_MS=0\nVNC_PASSWORD=%s\n' "$(tr -d '\n' <"$passfile")" >"${state}/camofox.env"
-  chmod 600 "${state}/camofox.env"
-  if ! podman image exists "$image" 2>/dev/null; then
-    echo "Pulling ${image} ..."
-    podman pull "$image"
-  fi
-  podman rm -f "$name" 2>/dev/null || true
-  podman run -d --replace \
-    --pod "${HERMES_POD}" \
-    --name "$name" \
-    --restart always \
-    --env-file "${state}/camofox.env" \
-    -v "${state}:/root/.camofox:rw${z}" \
-    "$image"
-  # Camoufox disables the X RENDER extension, which leaves noVNC on a black screen.
-  podman exec "$name" python3 -c '
-from pathlib import Path
-p = Path("/app/node_modules/camoufox-js/dist/virtdisplay.js")
-text = p.read_text()
-old = "\n".join(["            \"-extension\",", "            \"RENDER\","])
-new = "\n".join(["            \"+extension\",", "            \"RENDER\","])
-if old in text:
-    p.write_text(text.replace(old, new, 1))
-    print("render-enabled")
-elif new in text:
-    print("render-already-enabled")
-else:
-    raise SystemExit("virtdisplay.js RENDER flag not found")
-'
-  podman restart "$name" >/dev/null
-  echo "Camofox browser in pod ${HERMES_POD} (noVNC 127.0.0.1:${HERMES_CAMOFOX_NOVNC_PORT:-6080})"
-}
-
 # Auth sidecar shares the gateway network namespace (localhost-only bind). Sidecar
 # intentionally refuses non-loopback hosts — do not use host.containers.internal.
 start_identyclaw_auth_container() {
@@ -176,6 +121,7 @@ start_identyclaw_auth_container() {
   if hermes_is_pod_mode && podman pod exists "${HERMES_POD:-hermes-agent-pod}" 2>/dev/null; then
     args+=(--pod "${HERMES_POD}")
   else
+    # Standalone: share hermes netns — gateway must already be running.
     args+=(--network "container:${HERMES_CONTAINER}")
   fi
   args+=(
@@ -198,6 +144,23 @@ start_identyclaw_auth_container() {
   args+=(--entrypoint node "$HERMES_IMAGE" /opt/idcp/bin/sidecar.mjs --port "$port")
   podman "${args[@]}"
   echo "Auth sidecar ${name} on gateway network 127.0.0.1:${port}"
+}
+
+# Peer plugins refuse to enable until /health is up — wait after starting the sidecar.
+wait_identyclaw_auth_healthy() {
+  identyclaw_peer_enabled || return 0
+  local name port i
+  name="$(identyclaw_auth_container)"
+  port="${IDENTYCLAW_AUTH_PORT:-9910}"
+  for i in $(seq 1 30); do
+    if podman exec "$name" curl -fsS "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
+      echo "Auth sidecar healthy on 127.0.0.1:${port}"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "Warning: auth sidecar ${name} did not become healthy on :${port} within 30s" >&2
+  return 1
 }
 
 # Shared hermes gateway run args (caller adds --pod or host -p ports).
@@ -279,7 +242,7 @@ cmd_start_standalone() {
     podman rm -f "$HERMES_CONTAINER" 2>/dev/null || true
   fi
   hermes_gateway_run_args args
-  args+=(-p "${HERMES_API_PORT}:8642")
+  args+=(-p "${HERMES_API_PORT}:${API_SERVER_PORT:-8642}")
   # Telegram Bot API inbound webhooks: 443, 80, 88, or 8443 only.
   args+=(-p "${HERMES_TELEGRAM_PORT}:${TELEGRAM_WEBHOOK_PORT:-8443}")
   if [[ -n "${HERMES_DASHBOARD_PORT:-}" ]]; then
@@ -291,13 +254,52 @@ cmd_start_standalone() {
 
   podman "${args[@]}"
   start_identyclaw_auth_container
+  wait_identyclaw_auth_healthy || true
   echo "Started ${HERMES_CONTAINER} (standalone, restart=always) — API ${HERMES_API_PORT}, Telegram webhook ${HERMES_TELEGRAM_PORT}"
 }
 
+# Recreate fleet hermes-nginx from fleet-home rendered conf (Lemuel + Olivia SNI).
+refresh_fleet_hermes_nginx() {
+  local fleet z cert_dir nginx_conf nginx_name saved_profile
+  fleet="$(hermes_fleet_dir)"
+  z="$(selinux_mount_suffix)"
+  nginx_name="${HERMES_DEFAULT_NGINX_CONTAINER:-hermes-nginx}"
+  nginx_conf="${fleet}/nginx/nginx.conf"
+  saved_profile="${HERMES_PROFILE:-}"
+
+  # Render from default/fleet context so AGENT_B_* Olivia upstreams are included.
+  select_profile default
+  ensure_hermes_nginx_conf || {
+    [[ -n "$saved_profile" ]] && select_profile "$saved_profile"
+    return 1
+  }
+
+  cert_dir="${fleet}/certs"
+  if [[ ! -s "${cert_dir}/fullchain.pem" && -s "${HOME}/openclaw-agents-app/certs/fullchain.pem" ]]; then
+    cert_dir="${HOME}/openclaw-agents-app/certs"
+  fi
+  ensure_pod_logs_for_container "${fleet}/logs/nginx"
+  echo "Refreshing shared nginx ${nginx_name} (fleet ingress) ..."
+  podman run -d \
+    --pod "${HERMES_DEFAULT_POD:-hermes-agent-pod}" \
+    --name "$nginx_name" \
+    --replace \
+    --restart always \
+    -v "${cert_dir}:/app/certs:ro${z}" \
+    -v "${fleet}/logs/nginx:/var/log/nginx${z}" \
+    -v "${fleet}/nginx/inc:/etc/nginx/inc:ro${z}" \
+    -v "${nginx_conf}:/etc/nginx/nginx.conf:ro${z}" \
+    "$HERMES_NGINX_IMAGE"
+
+  [[ -n "$saved_profile" ]] && select_profile "$saved_profile"
+  return 0
+}
+
 cmd_start_pod() {
-  local app z args=() nginx_conf
+  local app z args=() nginx_conf join_existing=0 share_nginx=0 api_listen
   app="$(hermes_app_dir)"
   z="$(selinux_mount_suffix)"
+  api_listen="${API_SERVER_PORT:-8642}"
 
   # Force webhook adapter on in pod mode.
   export WEBHOOK_ENABLED=true
@@ -310,58 +312,118 @@ cmd_start_pod() {
     build_hermes_nginx_image
   fi
 
+  # Stop only this profile's containers; keep foreign / shared fleet pods.
   stop_hermes_pod_stack
 
-  # nginx owns HERMES_INGRESS_PORT (8443 for Telegram). Adapter must listen elsewhere.
+  if [[ "${HERMES_PROFILE:-default}" != "default" ]] \
+    && [[ "$HERMES_POD" == "${HERMES_DEFAULT_POD:-hermes-agent-pod}" ]]; then
+    share_nginx=1
+  fi
+
+  # nginx owns HERMES_INGRESS_PORT. Adapter must listen elsewhere.
   if [[ "${TELEGRAM_WEBHOOK_PORT}" == "${HERMES_INGRESS_PORT}" ]]; then
     export TELEGRAM_WEBHOOK_PORT=8643
     echo "Note: TELEGRAM_WEBHOOK_PORT set to 8643 (nginx listens on ${HERMES_INGRESS_PORT})" >&2
   fi
 
-  echo "Creating pod ${HERMES_POD} (ingress ${HERMES_INGRESS_PORT}, API ${HERMES_API_PORT}) ..."
-  podman pod create \
-    --name "$HERMES_POD" \
-    -p "${HERMES_INGRESS_PORT}:${HERMES_INGRESS_PORT}" \
-    -p "${HERMES_API_PORT}:8642" \
-    -p "127.0.0.1:${HERMES_CAMOFOX_NOVNC_PORT:-6080}:6080"
+  if podman pod exists "$HERMES_POD" 2>/dev/null; then
+    join_existing=1
+    echo "Joining existing pod ${HERMES_POD} (profile=${HERMES_PROFILE:-default})"
+  else
+    # Optional Passport mint-time aliases (e.g. HERMES_EXTRA_INGRESS_PORTS=7443 →
+    # host:7443 → container HERMES_INGRESS_PORT). Same nginx TLS listener.
+    local pod_ports=(
+      -p "${HERMES_INGRESS_PORT}:${HERMES_INGRESS_PORT}"
+      -p "${HERMES_API_PORT}:${api_listen}"
+    )
+    local extras extra_port
+    extras="${HERMES_EXTRA_INGRESS_PORTS:-}"
+    extras="${extras//,/ }"
+    for extra_port in $extras; do
+      extra_port="${extra_port//[[:space:]]/}"
+      [[ -n "$extra_port" ]] || continue
+      if [[ "$extra_port" == "${HERMES_INGRESS_PORT}" || "$extra_port" == "$api_listen" ]]; then
+        continue
+      fi
+      pod_ports+=(-p "${extra_port}:${HERMES_INGRESS_PORT}")
+      echo "Extra ingress publish: host :${extra_port} → nginx :${HERMES_INGRESS_PORT}"
+    done
 
-  start_camofox_container
+    # When creating the fleet pod, also publish Olivia's API if she joins it.
+    if [[ "${HERMES_PROFILE:-default}" == "default" ]]; then
+      local olivia_api_host olivia_api_listen
+      olivia_api_host="${AGENT_B_API_PORT:-}"
+      olivia_api_listen="${AGENT_B_API_SERVER_PORT:-8742}"
+      if [[ -n "$olivia_api_host" && "$olivia_api_host" != "${HERMES_API_PORT}" ]]; then
+        pod_ports+=(-p "${olivia_api_host}:${olivia_api_listen}")
+        echo "Olivia API publish: host :${olivia_api_host} → gateway :${olivia_api_listen}"
+      fi
+    fi
+
+    echo "Creating pod ${HERMES_POD} (ingress ${HERMES_INGRESS_PORT}, API ${HERMES_API_PORT}→${api_listen}) ..."
+    podman pod create \
+      --name "$HERMES_POD" \
+      "${pod_ports[@]}"
+  fi
 
   hermes_gateway_run_args args
   args+=(--pod "$HERMES_POD")
   if [[ -n "${HERMES_DASHBOARD_PORT:-}" ]]; then
     echo "Note: HERMES_DASHBOARD_PORT is ignored in pod mode; use loopback API or extend the pod publish list." >&2
   fi
+  # Peer plugins gate on sidecar /health at gateway boot — start auth first.
+  start_identyclaw_auth_container
+  wait_identyclaw_auth_healthy || true
   args+=("$HERMES_IMAGE" gateway run)
   podman "${args[@]}"
-  start_identyclaw_auth_container
 
-  nginx_conf="${app}/nginx/nginx.conf"
-  echo "Starting nginx sidecar ${HERMES_NGINX_CONTAINER} ..."
-  # All binds under APP_DIR (certs, logs, rendered conf, copied nginx/inc).
-  podman run -d \
-    --pod "$HERMES_POD" \
-    --name "$HERMES_NGINX_CONTAINER" \
-    --replace \
-    --restart always \
-    -v "${app}/certs:/app/certs:ro${z}" \
-    -v "${app}/logs/nginx:/var/log/nginx${z}" \
-    -v "${app}/nginx/inc:/etc/nginx/inc:ro${z}" \
-    -v "${nginx_conf}:/etc/nginx/nginx.conf:ro${z}" \
-    "$HERMES_NGINX_IMAGE"
+  if [[ "$share_nginx" == "1" ]]; then
+    # Olivia (or other joiner): no per-profile nginx — refresh shared fleet nginx.
+    podman rm -f "hermes-${HERMES_PROFILE}-nginx" 2>/dev/null || true
+    refresh_fleet_hermes_nginx || echo "Warning: failed to refresh fleet hermes-nginx" >&2
+  else
+    nginx_conf="${app}/nginx/nginx.conf"
+    echo "Starting nginx sidecar ${HERMES_NGINX_CONTAINER} ..."
+    local cert_dir="${app}/certs"
+    if [[ ! -s "${cert_dir}/fullchain.pem" && -s "$(hermes_fleet_dir)/certs/fullchain.pem" ]]; then
+      cert_dir="$(hermes_fleet_dir)/certs"
+    fi
+    if [[ ! -s "${cert_dir}/fullchain.pem" && -s "${HOME}/openclaw-agents-app/certs/fullchain.pem" ]]; then
+      cert_dir="${HOME}/openclaw-agents-app/certs"
+    fi
+    podman run -d \
+      --pod "$HERMES_POD" \
+      --name "$HERMES_NGINX_CONTAINER" \
+      --replace \
+      --restart always \
+      -v "${cert_dir}:/app/certs:ro${z}" \
+      -v "${app}/logs/nginx:/var/log/nginx${z}" \
+      -v "${app}/nginx/inc:/etc/nginx/inc:ro${z}" \
+      -v "${nginx_conf}:/etc/nginx/nginx.conf:ro${z}" \
+      "$HERMES_NGINX_IMAGE"
+  fi
 
-  echo "Started pod ${HERMES_POD} (restart=always)"
+  if [[ "$join_existing" == "1" ]]; then
+    echo "Started profile ${HERMES_PROFILE:-default} in existing pod ${HERMES_POD}"
+  else
+    echo "Started pod ${HERMES_POD} (restart=always)"
+  fi
   echo "  API:      http://127.0.0.1:${HERMES_API_PORT}"
   echo "  Ingress:  https://${HERMES_PUBLIC_HOST}:${HERMES_INGRESS_PORT}/health"
   echo "  Webhooks: https://${HERMES_PUBLIC_HOST}:${HERMES_INGRESS_PORT}/webhooks/<route>"
   echo "  Telegram: https://${HERMES_PUBLIC_HOST}:${HERMES_INGRESS_PORT}/telegram"
 }
 
-cmd_start() {
+cmd_start_one() {
   require_podman
   ensure_app_layout
   ensure_idcp_layout
   load_env
+  # load_env sources fleet HERMES_* (Lemuel) first — re-apply the selected profile
+  # so AGENT_B_*/homes/<id> overrides win for non-default profiles.
+  if [[ -n "${HERMES_PROFILE:-}" ]]; then
+    select_profile "$HERMES_PROFILE"
+  fi
 
   # Rootless Podman: linger so pods survive SSH/Cursor logout (SKIP_LINGER=1 to skip).
   bash "${HERMES_ROOT}/scripts/ensure-podman-linger.sh" || true
@@ -378,10 +440,15 @@ cmd_start() {
     # Ensure toggles land in .env after pod-mode defaults.
     sync_gateway_env_file || true
     ensure_webhook_pod_layout
-    ensure_tls_certs
+    # Skip self-signed generation when joining a pod that already has shared certs.
+    if [[ ! -s "$(hermes_app_dir)/certs/fullchain.pem" ]] \
+      && [[ ! -s "$(hermes_fleet_dir)/certs/fullchain.pem" ]] \
+      && [[ ! -s "${HOME}/openclaw-agents-app/certs/fullchain.pem" ]]; then
+      ensure_tls_certs || true
+    fi
     ensure_hermes_nginx_conf
     ensure_webhook_config_seed || true
-    normalize_tls_certs
+    normalize_tls_certs || true
   fi
 
   # Stage a host-readable .env copy for podman --env-file (app tree becomes
@@ -400,11 +467,6 @@ cmd_start() {
 
   # Peer flag must be snapshotted before chown hides the 0700 app tree from the host.
   identyclaw_peer_snapshot
-
-  # Memory lives on the bind mount, so recreate does not delete it. Keep a
-  # second copy outside the app dir in case this start is followed by nuke
-  # or an in-place rewrite of MEMORY.md.
-  backup_agent_memory start || echo "Warning: agent memory backup failed; live files are still in $(hermes_app_dir)" >&2
 
   prepare_app_for_container
 
@@ -428,6 +490,17 @@ cmd_start() {
   else
     podman ps --filter "name=^${HERMES_CONTAINER}$" --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
   fi
+}
+
+cmd_start() {
+  local targets t
+  targets="$(resolve_profile_targets "${1:-}")"
+  for t in $targets; do
+    echo "==> start profile ${t}"
+    select_profile "$t"
+    ensure_profile_home "$t"
+    cmd_start_one
+  done
 }
 
 cmd_init() {
@@ -473,10 +546,6 @@ cmd_nuke() {
   fi
   if [[ -e "$app" ]]; then
     confirm_app_nuke "$app" "$yes" || { echo "aborted"; exit 1; }
-    if ! backup_agent_memory nuke; then
-      echo "Refusing to delete ${app}: could not copy agent memory outside the app dir." >&2
-      exit 1
-    fi
     if command -v podman >/dev/null 2>&1; then
       cmd_stop >/dev/null 2>&1 || true
     fi
@@ -811,6 +880,8 @@ cmd_identyclaw_peer_install() {
   (cd "$pkg_auth" && npm install --omit=dev)
 
   # Host cannot mkdir/cp into a 0700 tree owned by the running gateway — use userns root.
+  # Plugin install dirs must match yaml ids (identyclaw-auth / identyclaw-a2a /
+  # identyclaw-webhooks). Legacy a2a-platform/ is removed so it cannot shadow.
   if [[ ! -w "$app" ]]; then
     if ! command -v podman >/dev/null 2>&1; then
       echo "App dir ${app} is not writable (gateway owns it) and podman is missing." >&2
@@ -826,15 +897,19 @@ cmd_identyclaw_peer_install() {
         $(printf '%q' "$app/plugins/identyclaw-auth") \
         $(printf '%q' "$app/plugins/identyclaw-a2a") \
         $(printf '%q' "$app/plugins/identyclaw-webhooks")
-      cp -a $(printf '%q' "$pkg_auth") $(printf '%q' "$app/plugins/identyclaw-auth")
-      cp -a $(printf '%q' "$pkg_a2a") $(printf '%q' "$app/plugins/identyclaw-a2a")
-      cp -a $(printf '%q' "$pkg_hooks") $(printf '%q' "$app/plugins/identyclaw-webhooks")
-      rm -rf $(printf '%q' "$app/plugins/identyclaw-auth/__pycache__") \
-        $(printf '%q' "$app/plugins/identyclaw-a2a/__pycache__") \
-        $(printf '%q' "$app/plugins/identyclaw-webhooks/__pycache__") \
-        $(printf '%q' "$app/plugins/identyclaw-auth/.git") \
+      # Auth: Python plugin + Node tree (node_modules from host npm ci); skip .git.
+      mkdir -p $(printf '%q' "$app/plugins/identyclaw-auth") \
+        $(printf '%q' "$app/plugins/identyclaw-a2a") \
+        $(printf '%q' "$app/plugins/identyclaw-webhooks")
+      cp -a $(printf '%q' "$pkg_auth")/. $(printf '%q' "$app/plugins/identyclaw-auth/")
+      cp -a $(printf '%q' "$pkg_a2a")/. $(printf '%q' "$app/plugins/identyclaw-a2a/")
+      cp -a $(printf '%q' "$pkg_hooks")/. $(printf '%q' "$app/plugins/identyclaw-webhooks/")
+      rm -rf $(printf '%q' "$app/plugins/identyclaw-auth/.git") \
         $(printf '%q' "$app/plugins/identyclaw-a2a/.git") \
-        $(printf '%q' "$app/plugins/identyclaw-webhooks/.git")
+        $(printf '%q' "$app/plugins/identyclaw-webhooks/.git") \
+        $(printf '%q' "$app/plugins/identyclaw-auth/__pycache__") \
+        $(printf '%q' "$app/plugins/identyclaw-a2a/__pycache__") \
+        $(printf '%q' "$app/plugins/identyclaw-webhooks/__pycache__")
     "
     podman unshare touch "${app}/.identyclaw-peer-enabled"
     # Keep hermes ownership on new files when the tree is UID 10000.
@@ -853,80 +928,59 @@ cmd_identyclaw_peer_install() {
       "${plugins_dir}/identyclaw-auth" \
       "${plugins_dir}/identyclaw-a2a" \
       "${plugins_dir}/identyclaw-webhooks"
-    cp -a "$pkg_auth" "${plugins_dir}/identyclaw-auth"
-    cp -a "$pkg_a2a" "${plugins_dir}/identyclaw-a2a"
-    cp -a "$pkg_hooks" "${plugins_dir}/identyclaw-webhooks"
-    rm -rf "${plugins_dir}/identyclaw-auth/__pycache__" \
-      "${plugins_dir}/identyclaw-a2a/__pycache__" \
-      "${plugins_dir}/identyclaw-webhooks/__pycache__" \
-      "${plugins_dir}/identyclaw-auth/.git" \
+    mkdir -p "${plugins_dir}/identyclaw-auth" \
+      "${plugins_dir}/identyclaw-a2a" \
+      "${plugins_dir}/identyclaw-webhooks"
+    cp -a "$pkg_auth"/. "${plugins_dir}/identyclaw-auth/"
+    cp -a "$pkg_a2a"/. "${plugins_dir}/identyclaw-a2a/"
+    cp -a "$pkg_hooks"/. "${plugins_dir}/identyclaw-webhooks/"
+    rm -rf "${plugins_dir}/identyclaw-auth/.git" \
       "${plugins_dir}/identyclaw-a2a/.git" \
-      "${plugins_dir}/identyclaw-webhooks/.git"
+      "${plugins_dir}/identyclaw-webhooks/.git" \
+      "${plugins_dir}/identyclaw-auth/__pycache__" \
+      "${plugins_dir}/identyclaw-a2a/__pycache__" \
+      "${plugins_dir}/identyclaw-webhooks/__pycache__"
     touch "${app}/.identyclaw-peer-enabled"
   fi
   # Refresh container-safe /opt/idcp wrappers (never bake a host packages path).
   ensure_idcp_layout
 
-  # Enable plugins in config.yaml (opt-in; allow tool override for a2a overlay)
+  # Enable plugins in config.yaml (opt-in). Merge into existing keys — never append a
+  # second top-level plugins:/platforms: block (YAML last-wins would wipe Telegram).
   if command -v python3 >/dev/null 2>&1; then
-    local py_script
-    py_script="$(cat <<'PY'
-import pathlib, sys
-app = pathlib.Path(sys.argv[1])
-cfg = app / "config.yaml"
-if not cfg.is_file():
-    print(f"skip config enablement — missing {cfg}")
-    raise SystemExit(0)
-text = cfg.read_text()
-marker = "# identyclaw-peer (managed by hermes.sh identyclaw-peer-install)"
-block = f"""
-{marker}
-plugins:
-  enabled:
-    - identyclaw-auth
-    - identyclaw-a2a
-    - identyclaw-webhooks
-  disabled:
-    - platforms/a2a
-  entries:
-    identyclaw-auth:
-      enabled: true
-    identyclaw-a2a:
-      enabled: true
-      allow_tool_override: true
-      granted_capabilities:
-        - tools.override
-    identyclaw-webhooks:
-      enabled: true
-platforms:
-  a2a:
-    enabled: true
-  identyclaw_hooks:
-    enabled: true
-"""
-if marker in text:
-    print("config.yaml already has identyclaw-peer marker (leaving block; merge manually if needed)")
-else:
-    cfg.write_text(text.rstrip() + "\n" + block + "\n")
-    print(f"Appended identyclaw-peer plugin enablement to {cfg}")
-    print("Review/merge if you already had a plugins: section.")
-PY
-)"
+    local merge_py="${HERMES_ROOT}/scripts/merge-identyclaw-peer-config.py"
     if [[ -w "$app" ]]; then
-      python3 -c "$py_script" "$app"
+      python3 "$merge_py" "$app"
     else
-      podman unshare python3 -c "$py_script" "$app"
+      podman unshare python3 "$merge_py" "$app"
     fi
   fi
 
   # Resolve NEAR creds path for sidecar / gateway (upsert_env_local_kv already handles UID 10000)
+  # Prefer .active pin when multiple *.json leftovers exist.
   local cred=""
   if [[ -w "$app" ]]; then
-    if [[ -d "${app}/secrets/near-credentials" ]]; then
+    if [[ -f "${app}/secrets/near-credentials/.active" ]]; then
+      local base
+      base="$(tr -d '[:space:]' <"${app}/secrets/near-credentials/.active")"
+      [[ -n "$base" && -f "${app}/secrets/near-credentials/${base}" ]] \
+        && cred="${app}/secrets/near-credentials/${base}"
+    fi
+    if [[ -z "$cred" && -d "${app}/secrets/near-credentials" ]]; then
       cred="$(find "${app}/secrets/near-credentials" -maxdepth 1 -name '*.json' | head -1 || true)"
     fi
   else
-    cred="$(podman unshare bash -c "find $(printf '%q' "${app}/secrets/near-credentials") -maxdepth 1 -name '*.json' 2>/dev/null | head -1" || true)"
+    cred="$(podman unshare bash -c "
+      d=$(printf '%q' "${app}/secrets/near-credentials")
+      if [[ -f \"\$d/.active\" ]]; then
+        base=\$(tr -d '[:space:]' <\"\$d/.active\")
+        if [[ -n \"\$base\" && -f \"\$d/\$base\" ]]; then
+          echo \"\$d/\$base\"
+          exit 0
+        fi
+      fi
+      find \"\$d\" -maxdepth 1 -name '*.json' 2>/dev/null | head -1
+    " || true)"
   fi
   if [[ -n "$cred" ]]; then
     upsert_env_local_kv "$(hermes_env_file)" NEAR_CREDENTIALS_FILE_PATH "$cred"
@@ -1050,61 +1104,56 @@ cmd_idcp() {
   fi
 }
 
-cmd_backup_memory() {
-  backup_agent_memory manual
-}
-
-cmd_restore_memory() {
-  load_env
-  restore_agent_memory "${1:-LATEST}"
-}
-
 cmd_stop() {
+  local targets t
   require_podman
-  load_env
-  backup_agent_memory stop || echo "Warning: agent memory backup failed; live files are still in $(hermes_app_dir)" >&2
-  if hermes_is_pod_mode || podman pod exists "${HERMES_POD:-hermes-agent-pod}" 2>/dev/null; then
-    stop_hermes_pod_stack
-    echo "Stopped pod ${HERMES_POD:-hermes-agent-pod}"
-  else
-    podman rm -f "$(identyclaw_auth_container)" 2>/dev/null || true
-    podman stop "$HERMES_CONTAINER" 2>/dev/null || true
-    podman rm -f "$HERMES_CONTAINER" 2>/dev/null || true
-    echo "Stopped ${HERMES_CONTAINER}"
-  fi
-  restore_app_ownership
+  targets="$(resolve_profile_targets "${1:-}")"
+  for t in $targets; do
+    echo "==> stop profile ${t}"
+    select_profile "$t"
+    load_env
+    if hermes_is_pod_mode || podman pod exists "${HERMES_POD:-hermes-agent-pod}" 2>/dev/null \
+      || container_is_running "${HERMES_CONTAINER:-hermes}" 2>/dev/null; then
+      stop_hermes_pod_stack
+      echo "Stopped containers for profile ${t} (pod ${HERMES_POD:-hermes-agent-pod})"
+    else
+      podman rm -f "$(identyclaw_auth_container)" 2>/dev/null || true
+      podman stop "$HERMES_CONTAINER" 2>/dev/null || true
+      podman rm -f "$HERMES_CONTAINER" 2>/dev/null || true
+      echo "Stopped ${HERMES_CONTAINER}"
+    fi
+    restore_app_ownership
+  done
 }
 
 cmd_status() {
+  local targets t
   require_podman
-  load_env
-  echo "Repo:    $HERMES_ROOT"
-  echo "App dir: $(hermes_app_dir)"
-  local membackup
-  membackup="$(hermes_memory_backup_dir)"
-  if [[ -d "${membackup}/LATEST" ]]; then
-    echo "Memory:  ${membackup}/LATEST"
-  else
-    echo "Memory:  no backup yet (./hermes.sh backup-memory)"
-  fi
-  echo "Image:   ${HERMES_IMAGE:-?(run init)}"
-  echo "Mode:    ${HERMES_DEPLOY_MODE:-standalone}"
-  if hermes_is_pod_mode || podman pod exists "${HERMES_POD:-hermes-agent-pod}" 2>/dev/null; then
-    echo "Pod:     ${HERMES_POD:-hermes-agent-pod}"
-    echo "Nginx:   ${HERMES_NGINX_IMAGE:-}"
+  load_fleet_env_only
+  echo "Repo:     $HERMES_ROOT"
+  echo "Fleet:    $(hermes_fleet_dir)"
+  echo "Profiles: $(configured_profile_ids)"
+  echo "Image:    ${HERMES_IMAGE:-?(run init)}"
+  targets="$(resolve_profile_targets "${1:-}")"
+  for t in $targets; do
+    select_profile "$t"
+    load_env
+    echo ""
+    echo "── profile ${t} ──"
+    echo "  Home:    $(hermes_app_dir)"
+    echo "  Mode:    ${HERMES_DEPLOY_MODE:-standalone}"
+    echo "  Pod:     ${HERMES_POD:-}"
+    echo "  Container: ${HERMES_CONTAINER:-}"
     if [[ -n "${HERMES_PUBLIC_HOST:-}" ]]; then
-      echo "Ingress:  https://${HERMES_PUBLIC_HOST}:${HERMES_INGRESS_PORT:-8443}/health"
-      echo "Webhook:  https://${HERMES_PUBLIC_HOST}:${HERMES_INGRESS_PORT:-8443}/webhooks/<route>"
-      echo "Telegram: https://${HERMES_PUBLIC_HOST}:${HERMES_INGRESS_PORT:-8443}/telegram"
+      echo "  Ingress: https://${HERMES_PUBLIC_HOST}:${HERMES_INGRESS_PORT:-8443}/health"
     fi
-    podman ps -a --filter "pod=${HERMES_POD:-hermes-agent-pod}" \
-      --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}\t{{.Ports}}' || true
-  else
-    echo "API:      http://127.0.0.1:${HERMES_API_PORT}"
-    echo "Telegram: host ${HERMES_TELEGRAM_PORT} → container ${TELEGRAM_WEBHOOK_PORT} (Bot API allows 443/80/88/8443)"
-    podman ps -a --filter "name=^${HERMES_CONTAINER:-hermes}$" \
-      --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}\t{{.Ports}}'
-  fi
+    if container_is_running "${HERMES_CONTAINER:-}"; then
+      podman ps --filter "name=^${HERMES_CONTAINER}$" \
+        --format '  {{.Names}}  {{.Status}}  {{.Ports}}' || true
+    else
+      echo "  (gateway not running)"
+    fi
+  done
 }
 
 cmd_generate_certs() {
@@ -1256,22 +1305,80 @@ cmd_himalaya_test() {
   himalaya_test
 }
 
+cmd_migrate_olivia() {
+  bash "${HERMES_ROOT}/scripts/migrate-olivia-from-openclaw.sh" "$@"
+}
+
+# Optional leading profile selector: ./hermes.sh [-p PROFILE|all] <cmd> …
+# Also accepts legacy OpenClaw ids (agent-b → olivia, agent-l → default).
 main() {
-  local cmd="${1:-}"
+  local cmd profile_arg=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -p|--profile)
+        profile_arg="${2:-}"
+        shift 2 || true
+        ;;
+      --profile=*)
+        profile_arg="${1#--profile=}"
+        shift
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+  cmd="${1:-}"
   shift || true
+
+  # Bare profile as first positional for start/stop/status/logs: ./hermes.sh start olivia
+  case "$cmd" in
+    start|stop|status|logs)
+      if [[ -z "$profile_arg" && -n "${1:-}" ]]; then
+        case "$1" in
+          all|default|olivia|agent-b|agent-l|lemuel)
+            profile_arg="$1"
+            shift || true
+            ;;
+        esac
+      fi
+      ;;
+  esac
+
+  if [[ -n "$profile_arg" ]]; then
+    case "$cmd" in
+      start|stop|status)
+        # These commands iterate targets themselves.
+        ;;
+      logs|chat|exec|idcp|idcp-setup|idcp-install|identyclaw-peer-install|identyclaw-auth-start|identyclaw-auth-stop|himalaya-install|himalaya-password|himalaya-test|generate-certs|own)
+        select_profile "$(hermes_normalize_profile_id "$profile_arg")"
+        ;;
+    esac
+  fi
+
   case "$cmd" in
     init) cmd_init "$@" ;;
     nuke) cmd_nuke "$@" ;;
     setup) cmd_setup "$@" ;;
-    start) cmd_start "$@" ;;
-    stop) cmd_stop "$@" ;;
-    status) cmd_status "$@" ;;
-    backup-memory) cmd_backup_memory "$@" ;;
-    restore-memory) cmd_restore_memory "$@" ;;
-    logs) cmd_logs "$@" ;;
+    start) cmd_start "${profile_arg:-${1:-}}" ;;
+    stop) cmd_stop "${profile_arg:-${1:-}}" ;;
+    status) cmd_status "${profile_arg:-${1:-}}" ;;
+    logs)
+      [[ -n "$profile_arg" ]] || select_profile default
+      load_env
+      cmd_logs "$@"
+      ;;
     pull) cmd_pull "$@" ;;
-    chat) cmd_chat "$@" ;;
-    exec) cmd_exec "$@" ;;
+    chat)
+      [[ -n "$profile_arg" ]] || select_profile default
+      load_env
+      cmd_chat "$@"
+      ;;
+    exec)
+      [[ -n "$profile_arg" ]] || select_profile default
+      load_env
+      cmd_exec "$@"
+      ;;
     own) cmd_own "$@" ;;
     idcp-setup) cmd_idcp_setup "$@" ;;
     idcp-install) cmd_idcp_install "$@" ;;
@@ -1284,6 +1391,7 @@ main() {
     himalaya-test) cmd_himalaya_test "$@" ;;
     generate-certs) cmd_generate_certs "$@" ;;
     build-nginx) cmd_build_nginx "$@" ;;
+    migrate-olivia) cmd_migrate_olivia "$@" ;;
     -h|--help|help|"") usage ;;
     *)
       echo "Unknown command: $cmd" >&2
