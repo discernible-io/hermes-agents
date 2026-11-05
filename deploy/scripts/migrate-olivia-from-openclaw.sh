@@ -22,8 +22,8 @@ usage() {
 Usage: migrate-olivia-from-openclaw.sh [--dry-run] [--cutover]
 
   --dry-run   Print actions only
-  --cutover   After seeding, stop OpenClaw agent-b + openclaw-nginx and
-              start Hermes olivia in identyclaw-agents-pod (takes :8443)
+  --cutover   After seeding, stop OpenClaw agent-b and start Hermes olivia
+              in hermes-agent-pod (Hermes :10443 / Telegram 80→10443; OpenClaw keeps :8443)
 EOF
 }
 
@@ -82,18 +82,21 @@ if [[ "$DRY_RUN" == "0" ]]; then
   envfile_set_if_empty "$fleet_env" AGENT_B_EMAIL "olivia@agenthood.me"
   envfile_set_if_empty "$fleet_env" AGENT_B_DISPLAY_NAME "Olivia Tara"
   envfile_set_if_empty "$fleet_env" AGENT_B_PUBLIC_HOST "oliviatara.dihola.io"
-  envfile_set_if_empty "$fleet_env" AGENT_B_INGRESS_PORT "8443"
+  # Hermes side of infra divide: 10443 (+ Telegram via 80→10443); OpenClaw keeps :8443.
+  envfile_set_if_empty "$fleet_env" AGENT_B_INGRESS_PORT "10443"
+  envfile_set_if_empty "$fleet_env" AGENT_B_EXTRA_INGRESS_PORTS "7443"
   envfile_set_if_empty "$fleet_env" AGENT_B_API_PORT "11643"
   envfile_set_if_empty "$fleet_env" AGENT_B_DEPLOY_MODE "pod"
   envfile_set_if_empty "$fleet_env" AGENT_B_SMTP_PORT "587"
   envfile_set_if_empty "$fleet_env" AGENT_B_SMTP_ENCRYPTION "start-tls"
-  envfile_set_if_empty "$fleet_env" AGENT_B_JOIN_POD "identyclaw-agents-pod"
-  # Unique internal ports if ever co-located; in joined pod OpenClaw uses 187xx.
-  envfile_set_if_empty "$fleet_env" AGENT_B_A2A_PORT "9900"
-  envfile_set_if_empty "$fleet_env" AGENT_B_AUTH_PORT "9910"
-  envfile_set_if_empty "$fleet_env" AGENT_B_HOOKS_PORT "9911"
-  envfile_set_if_empty "$fleet_env" AGENT_B_WEBHOOK_PORT "8644"
-  # Joe/Daniel proxies are Olivia/:8443-only — never seed on fleet env.local.
+  envfile_set_if_empty "$fleet_env" AGENT_B_JOIN_POD "hermes-agent-pod"
+  # Distinct loopback ports — shared netns with Lemuel on hermes-agent-pod.
+  envfile_set_if_empty "$fleet_env" AGENT_B_TELEGRAM_WEBHOOK_PORT "8743"
+  envfile_set_if_empty "$fleet_env" AGENT_B_WEBHOOK_PORT "8744"
+  envfile_set_if_empty "$fleet_env" AGENT_B_A2A_PORT "9920"
+  envfile_set_if_empty "$fleet_env" AGENT_B_AUTH_PORT "9921"
+  envfile_set_if_empty "$fleet_env" AGENT_B_HOOKS_PORT "9922"
+  envfile_set_if_empty "$fleet_env" AGENT_B_API_SERVER_PORT "8742"
 fi
 
 # Profile-local non-secrets
@@ -104,17 +107,22 @@ if [[ "$DRY_RUN" == "0" ]]; then
   envfile_set_if_empty "$prof_env" HERMES_EMAIL "olivia@agenthood.me"
   envfile_set_if_empty "$prof_env" HERMES_EMAIL_DISPLAY_NAME "Olivia Tara"
   envfile_set_if_empty "$prof_env" HERMES_PUBLIC_HOST "oliviatara.dihola.io"
-  envfile_set_if_empty "$prof_env" HERMES_INGRESS_PORT "8443"
+  envfile_set_if_empty "$prof_env" HERMES_INGRESS_PORT "10443"
+  envfile_set_if_empty "$prof_env" HERMES_EXTRA_INGRESS_PORTS "7443"
   envfile_set_if_empty "$prof_env" HERMES_API_PORT "11643"
   envfile_set_if_empty "$prof_env" HERMES_DEPLOY_MODE "pod"
   envfile_set_if_empty "$prof_env" HERMES_SMTP_PORT "587"
   envfile_set_if_empty "$prof_env" HERMES_SMTP_ENCRYPTION "start-tls"
   envfile_set_if_empty "$prof_env" WEBHOOK_ENABLED "true"
-  envfile_set_if_empty "$prof_env" WEBHOOK_PORT "8644"
-  envfile_set_if_empty "$prof_env" A2A_PUBLIC_URL "https://oliviatara.dihola.io:8443"
-  envfile_set_if_empty "$prof_env" IDENTYCLAW_WEBHOOK_URL "https://oliviatara.dihola.io:8443"
+  envfile_set_if_empty "$prof_env" WEBHOOK_PORT "8744"
+  envfile_set_if_empty "$prof_env" TELEGRAM_WEBHOOK_PORT "8743"
+  envfile_set_if_empty "$prof_env" API_SERVER_PORT "8742"
+  envfile_set_if_empty "$prof_env" A2A_PORT "9920"
+  envfile_set_if_empty "$prof_env" IDENTYCLAW_AUTH_PORT "9921"
+  envfile_set_if_empty "$prof_env" IDENTYCLAW_HOOKS_PORT "9922"
+  envfile_set_if_empty "$prof_env" A2A_PUBLIC_URL "https://oliviatara.dihola.io:7443"
+  envfile_set_if_empty "$prof_env" IDENTYCLAW_WEBHOOK_URL "https://oliviatara.dihola.io:7443"
   envfile_set_if_empty "$prof_env" IDENTYCLAW_CONTACT_URI "email:agenthood.me:olivia@agenthood.me"
-  envfile_set_if_empty "$prof_env" OPENCLAW_PROXY_UPSTREAMS "joe.dihola.io:18795,daniel.dihola.io:18799"
 fi
 
 # --- 2. File secrets via running OpenClaw container (mode 0700 on host) ------
@@ -237,12 +245,17 @@ if src.exists():
 take("RODIT_NEAR_CREDENTIALS_SOURCE", "file")
 if near.exists():
     take("NEAR_CREDENTIALS_FILE_PATH", str(near))
-take("TELEGRAM_WEBHOOK_URL", "https://oliviatara.dihola.io:8443/telegram")
+take("TELEGRAM_WEBHOOK_URL", "https://oliviatara.dihola.io:80/telegram")
+take("TELEGRAM_WEBHOOK_PORT", "8743")
 take("WEBHOOK_ENABLED", "true")
-take("WEBHOOK_PORT", "8644")
-take("A2A_PUBLIC_URL", "https://oliviatara.dihola.io:8443")
+take("WEBHOOK_PORT", "8744")
+take("API_SERVER_PORT", "8742")
+take("A2A_PUBLIC_URL", "https://oliviatara.dihola.io:7443")
 take("A2A_HOST", "127.0.0.1")
-take("A2A_PORT", "9900")
+take("A2A_PORT", "9920")
+take("A2A_AUTH_SIDECAR_PORT", "9921")
+take("IDENTYCLAW_AUTH_PORT", "9921")
+take("IDENTYCLAW_HOOKS_PORT", "9922")
 take("IDENTYCLAW_A2A_AUTH", "passport-jwt")
 take("IDENTYCLAW_JWT_ISSUER", "https://api.identyclaw.com")
 # Olivia NEAR account id is the JWT audience for inbound peers
@@ -348,19 +361,18 @@ if [[ "$DO_CUTOVER" != "1" ]]; then
   exit 0
 fi
 
-echo "==> Cutover: stop OpenClaw agent-b + nginx; start Hermes olivia on :8443"
+echo "==> Cutover: stop OpenClaw agent-b only; Olivia joins hermes-agent-pod (OpenClaw keeps :8443)"
 run podman stop openclaw-agent-b 2>/dev/null || true
-run podman stop openclaw-nginx 2>/dev/null || true
-run podman rm -f openclaw-nginx 2>/dev/null || true
 
-# Copy LE certs into profile if missing (SAN already covers oliviatara/joe/daniel)
+# Copy LE certs into fleet if missing (SAN covers oliviatara; shared hermes-nginx uses fleet certs)
 if [[ "$DRY_RUN" == "0" ]]; then
-  if [[ ! -s "${home}/certs/fullchain.pem" && -s "${OPENCLAW_APP}/certs/fullchain.pem" ]]; then
-    mkdir -p "${home}/certs"
-    cp -a "${OPENCLAW_APP}/certs/fullchain.pem" "${home}/certs/" 2>/dev/null \
-      || podman unshare cp -a "${OPENCLAW_APP}/certs/fullchain.pem" "${home}/certs/" || true
-    cp -a "${OPENCLAW_APP}/certs/privkey.pem" "${home}/certs/" 2>/dev/null \
-      || podman unshare cp -a "${OPENCLAW_APP}/certs/privkey.pem" "${home}/certs/" || true
+  fleet_certs="$(hermes_fleet_dir)/certs"
+  if [[ ! -s "${fleet_certs}/fullchain.pem" && -s "${OPENCLAW_APP}/certs/fullchain.pem" ]]; then
+    mkdir -p "${fleet_certs}"
+    cp -a "${OPENCLAW_APP}/certs/fullchain.pem" "${fleet_certs}/" 2>/dev/null \
+      || podman unshare cp -a "${OPENCLAW_APP}/certs/fullchain.pem" "${fleet_certs}/" || true
+    cp -a "${OPENCLAW_APP}/certs/privkey.pem" "${fleet_certs}/" 2>/dev/null \
+      || podman unshare cp -a "${OPENCLAW_APP}/certs/privkey.pem" "${fleet_certs}/" || true
   fi
 fi
 
@@ -372,7 +384,9 @@ else
 fi
 
 echo "==> Cutover done. Smoke:"
-echo "  curl -sk https://oliviatara.dihola.io:8443/health"
+echo "  curl -sk https://oliviatara.dihola.io:10443/health"
+echo "  curl -sk https://oliviatara.dihola.io:80/health"
+echo "  curl -sk https://oliviatara.dihola.io:7443/health"
 echo "  curl -sk https://joe.dihola.io:8443/health"
 echo "  curl -sk https://daniel.dihola.io:8443/health"
 echo "  curl -sk https://identyclaw-concierge.identyclaw.com:10443/health"

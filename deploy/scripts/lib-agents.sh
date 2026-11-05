@@ -161,7 +161,8 @@ profile_pod() {
   if [[ "$id" == "default" ]]; then
     echo "${HERMES_DEFAULT_POD:-hermes-agent-pod}"
   else
-    # Olivia joins OpenClaw ingress pod by default so joe/daniel stay on :8443.
+    # Olivia joins hermes-agent-pod so OpenClaw keeps :8443 and Hermes
+    # Telegram stays on infra 80→10443 (SNI via shared hermes-nginx).
     local join
     join="$(profile_env_value "$id" JOIN_POD "")"
     if [[ -n "$join" ]]; then
@@ -169,17 +170,30 @@ profile_pod() {
       return 0
     fi
     if [[ "$id" == "olivia" ]]; then
-      echo "${HERMES_OLIVIA_POD:-identyclaw-agents-pod}"
+      echo "${HERMES_OLIVIA_POD:-hermes-agent-pod}"
       return 0
     fi
     echo "hermes-${id}-pod"
   fi
 }
 
+# True when this profile shares fleet hermes-nginx (no per-profile nginx sidecar).
+profile_shares_fleet_nginx() {
+  local id pod fleet_pod
+  id="$(hermes_normalize_profile_id "$1")"
+  [[ "$id" == "default" ]] && return 1
+  pod="$(profile_pod "$id")"
+  fleet_pod="${HERMES_DEFAULT_POD:-hermes-agent-pod}"
+  [[ "$pod" == "$fleet_pod" ]]
+}
+
 profile_nginx_container() {
   local id
   id="$(hermes_normalize_profile_id "$1")"
   if [[ "$id" == "default" ]]; then
+    echo "${HERMES_DEFAULT_NGINX_CONTAINER:-hermes-nginx}"
+  elif profile_shares_fleet_nginx "$id"; then
+    # Shared ingress: fleet nginx owns the TLS listener; no hermes-olivia-nginx.
     echo "${HERMES_DEFAULT_NGINX_CONTAINER:-hermes-nginx}"
   else
     echo "hermes-${id}-nginx"
@@ -270,6 +284,10 @@ select_profile() {
   [[ -n "$v" ]] && export IDENTYCLAW_HOOKS_PORT="$v"
   v="$(profile_env_value "$id" WEBHOOK_PORT "${WEBHOOK_PORT:-}")"
   [[ -n "$v" ]] && export WEBHOOK_PORT="$v"
+  v="$(profile_env_value "$id" TELEGRAM_WEBHOOK_PORT "${TELEGRAM_WEBHOOK_PORT:-}")"
+  [[ -n "$v" ]] && export TELEGRAM_WEBHOOK_PORT="$v"
+  v="$(profile_env_value "$id" API_SERVER_PORT "${API_SERVER_PORT:-}")"
+  [[ -n "$v" ]] && export API_SERVER_PORT="$v"
   v="$(profile_env_value "$id" DEPLOY_MODE "${HERMES_DEPLOY_MODE:-}")"
   [[ -n "$v" ]] && export HERMES_DEPLOY_MODE="$v"
 
@@ -281,10 +299,8 @@ select_profile() {
     set +a
   fi
 
-  # OpenClaw joe/daniel proxies belong only on Olivia's :8443 ingress.
-  if [[ "$id" != "olivia" ]]; then
-    unset OPENCLAW_PROXY_UPSTREAMS || true
-  fi
+  # Joe/Daniel stay on OpenClaw :8443 — never proxy them through Hermes nginx.
+  unset OPENCLAW_PROXY_UPSTREAMS || true
 }
 
 # Resolve CLI target: all | default | olivia | agent-b | …

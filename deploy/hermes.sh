@@ -242,7 +242,7 @@ cmd_start_standalone() {
     podman rm -f "$HERMES_CONTAINER" 2>/dev/null || true
   fi
   hermes_gateway_run_args args
-  args+=(-p "${HERMES_API_PORT}:8642")
+  args+=(-p "${HERMES_API_PORT}:${API_SERVER_PORT:-8642}")
   # Telegram Bot API inbound webhooks: 443, 80, 88, or 8443 only.
   args+=(-p "${HERMES_TELEGRAM_PORT}:${TELEGRAM_WEBHOOK_PORT:-8443}")
   if [[ -n "${HERMES_DASHBOARD_PORT:-}" ]]; then
@@ -258,10 +258,48 @@ cmd_start_standalone() {
   echo "Started ${HERMES_CONTAINER} (standalone, restart=always) — API ${HERMES_API_PORT}, Telegram webhook ${HERMES_TELEGRAM_PORT}"
 }
 
+# Recreate fleet hermes-nginx from fleet-home rendered conf (Lemuel + Olivia SNI).
+refresh_fleet_hermes_nginx() {
+  local fleet z cert_dir nginx_conf nginx_name saved_profile
+  fleet="$(hermes_fleet_dir)"
+  z="$(selinux_mount_suffix)"
+  nginx_name="${HERMES_DEFAULT_NGINX_CONTAINER:-hermes-nginx}"
+  nginx_conf="${fleet}/nginx/nginx.conf"
+  saved_profile="${HERMES_PROFILE:-}"
+
+  # Render from default/fleet context so AGENT_B_* Olivia upstreams are included.
+  select_profile default
+  ensure_hermes_nginx_conf || {
+    [[ -n "$saved_profile" ]] && select_profile "$saved_profile"
+    return 1
+  }
+
+  cert_dir="${fleet}/certs"
+  if [[ ! -s "${cert_dir}/fullchain.pem" && -s "${HOME}/openclaw-agents-app/certs/fullchain.pem" ]]; then
+    cert_dir="${HOME}/openclaw-agents-app/certs"
+  fi
+  ensure_pod_logs_for_container "${fleet}/logs/nginx"
+  echo "Refreshing shared nginx ${nginx_name} (fleet ingress) ..."
+  podman run -d \
+    --pod "${HERMES_DEFAULT_POD:-hermes-agent-pod}" \
+    --name "$nginx_name" \
+    --replace \
+    --restart always \
+    -v "${cert_dir}:/app/certs:ro${z}" \
+    -v "${fleet}/logs/nginx:/var/log/nginx${z}" \
+    -v "${fleet}/nginx/inc:/etc/nginx/inc:ro${z}" \
+    -v "${nginx_conf}:/etc/nginx/nginx.conf:ro${z}" \
+    "$HERMES_NGINX_IMAGE"
+
+  [[ -n "$saved_profile" ]] && select_profile "$saved_profile"
+  return 0
+}
+
 cmd_start_pod() {
-  local app z args=() nginx_conf join_existing=0
+  local app z args=() nginx_conf join_existing=0 share_nginx=0 api_listen
   app="$(hermes_app_dir)"
   z="$(selinux_mount_suffix)"
+  api_listen="${API_SERVER_PORT:-8642}"
 
   # Force webhook adapter on in pod mode.
   export WEBHOOK_ENABLED=true
@@ -274,10 +312,15 @@ cmd_start_pod() {
     build_hermes_nginx_image
   fi
 
-  # Stop only this profile's containers; keep foreign pods (Olivia → openclaw pod).
+  # Stop only this profile's containers; keep foreign / shared fleet pods.
   stop_hermes_pod_stack
 
-  # nginx owns HERMES_INGRESS_PORT (8443 for Telegram). Adapter must listen elsewhere.
+  if [[ "${HERMES_PROFILE:-default}" != "default" ]] \
+    && [[ "$HERMES_POD" == "${HERMES_DEFAULT_POD:-hermes-agent-pod}" ]]; then
+    share_nginx=1
+  fi
+
+  # nginx owns HERMES_INGRESS_PORT. Adapter must listen elsewhere.
   if [[ "${TELEGRAM_WEBHOOK_PORT}" == "${HERMES_INGRESS_PORT}" ]]; then
     export TELEGRAM_WEBHOOK_PORT=8643
     echo "Note: TELEGRAM_WEBHOOK_PORT set to 8643 (nginx listens on ${HERMES_INGRESS_PORT})" >&2
@@ -291,7 +334,7 @@ cmd_start_pod() {
     # host:7443 → container HERMES_INGRESS_PORT). Same nginx TLS listener.
     local pod_ports=(
       -p "${HERMES_INGRESS_PORT}:${HERMES_INGRESS_PORT}"
-      -p "${HERMES_API_PORT}:8642"
+      -p "${HERMES_API_PORT}:${api_listen}"
     )
     local extras extra_port
     extras="${HERMES_EXTRA_INGRESS_PORTS:-}"
@@ -299,14 +342,25 @@ cmd_start_pod() {
     for extra_port in $extras; do
       extra_port="${extra_port//[[:space:]]/}"
       [[ -n "$extra_port" ]] || continue
-      if [[ "$extra_port" == "${HERMES_INGRESS_PORT}" || "$extra_port" == "8642" ]]; then
+      if [[ "$extra_port" == "${HERMES_INGRESS_PORT}" || "$extra_port" == "$api_listen" ]]; then
         continue
       fi
       pod_ports+=(-p "${extra_port}:${HERMES_INGRESS_PORT}")
       echo "Extra ingress publish: host :${extra_port} → nginx :${HERMES_INGRESS_PORT}"
     done
 
-    echo "Creating pod ${HERMES_POD} (ingress ${HERMES_INGRESS_PORT}, API ${HERMES_API_PORT}) ..."
+    # When creating the fleet pod, also publish Olivia's API if she joins it.
+    if [[ "${HERMES_PROFILE:-default}" == "default" ]]; then
+      local olivia_api_host olivia_api_listen
+      olivia_api_host="${AGENT_B_API_PORT:-}"
+      olivia_api_listen="${AGENT_B_API_SERVER_PORT:-8742}"
+      if [[ -n "$olivia_api_host" && "$olivia_api_host" != "${HERMES_API_PORT}" ]]; then
+        pod_ports+=(-p "${olivia_api_host}:${olivia_api_listen}")
+        echo "Olivia API publish: host :${olivia_api_host} → gateway :${olivia_api_listen}"
+      fi
+    fi
+
+    echo "Creating pod ${HERMES_POD} (ingress ${HERMES_INGRESS_PORT}, API ${HERMES_API_PORT}→${api_listen}) ..."
     podman pod create \
       --name "$HERMES_POD" \
       "${pod_ports[@]}"
@@ -323,28 +377,31 @@ cmd_start_pod() {
   args+=("$HERMES_IMAGE" gateway run)
   podman "${args[@]}"
 
-  nginx_conf="${app}/nginx/nginx.conf"
-  echo "Starting nginx sidecar ${HERMES_NGINX_CONTAINER} ..."
-  # All binds under APP_DIR (certs, logs, rendered conf, copied nginx/inc).
-  # When joining openclaw pod, prefer fleet/shared certs if profile certs missing.
-  local cert_dir="${app}/certs"
-  if [[ ! -s "${cert_dir}/fullchain.pem" && -s "$(hermes_fleet_dir)/certs/fullchain.pem" ]]; then
-    cert_dir="$(hermes_fleet_dir)/certs"
+  if [[ "$share_nginx" == "1" ]]; then
+    # Olivia (or other joiner): no per-profile nginx — refresh shared fleet nginx.
+    podman rm -f "hermes-${HERMES_PROFILE}-nginx" 2>/dev/null || true
+    refresh_fleet_hermes_nginx || echo "Warning: failed to refresh fleet hermes-nginx" >&2
+  else
+    nginx_conf="${app}/nginx/nginx.conf"
+    echo "Starting nginx sidecar ${HERMES_NGINX_CONTAINER} ..."
+    local cert_dir="${app}/certs"
+    if [[ ! -s "${cert_dir}/fullchain.pem" && -s "$(hermes_fleet_dir)/certs/fullchain.pem" ]]; then
+      cert_dir="$(hermes_fleet_dir)/certs"
+    fi
+    if [[ ! -s "${cert_dir}/fullchain.pem" && -s "${HOME}/openclaw-agents-app/certs/fullchain.pem" ]]; then
+      cert_dir="${HOME}/openclaw-agents-app/certs"
+    fi
+    podman run -d \
+      --pod "$HERMES_POD" \
+      --name "$HERMES_NGINX_CONTAINER" \
+      --replace \
+      --restart always \
+      -v "${cert_dir}:/app/certs:ro${z}" \
+      -v "${app}/logs/nginx:/var/log/nginx${z}" \
+      -v "${app}/nginx/inc:/etc/nginx/inc:ro${z}" \
+      -v "${nginx_conf}:/etc/nginx/nginx.conf:ro${z}" \
+      "$HERMES_NGINX_IMAGE"
   fi
-  # Olivia cutover: reuse OpenClaw LE certs (SAN includes oliviatara/joe/daniel).
-  if [[ ! -s "${cert_dir}/fullchain.pem" && -s "${HOME}/openclaw-agents-app/certs/fullchain.pem" ]]; then
-    cert_dir="${HOME}/openclaw-agents-app/certs"
-  fi
-  podman run -d \
-    --pod "$HERMES_POD" \
-    --name "$HERMES_NGINX_CONTAINER" \
-    --replace \
-    --restart always \
-    -v "${cert_dir}:/app/certs:ro${z}" \
-    -v "${app}/logs/nginx:/var/log/nginx${z}" \
-    -v "${app}/nginx/inc:/etc/nginx/inc:ro${z}" \
-    -v "${nginx_conf}:/etc/nginx/nginx.conf:ro${z}" \
-    "$HERMES_NGINX_IMAGE"
 
   if [[ "$join_existing" == "1" ]]; then
     echo "Started profile ${HERMES_PROFILE:-default} in existing pod ${HERMES_POD}"

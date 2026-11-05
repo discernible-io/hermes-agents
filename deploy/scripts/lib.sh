@@ -1383,26 +1383,44 @@ PY
 }
 
 stop_hermes_pod_stack() {
-  local name nginx_name pod_name auth_name owned_pod=1
+  local name nginx_name pod_name auth_name owned_pod=1 share_nginx=0 fleet_nginx
   load_env
   name="${HERMES_CONTAINER:-hermes}"
   nginx_name="${HERMES_NGINX_CONTAINER:-hermes-nginx}"
   auth_name="${HERMES_IDENTYCLAW_AUTH_CONTAINER:-hermes-identyclaw-auth}"
   pod_name="${HERMES_POD:-hermes-agent-pod}"
-  # Never destroy a foreign/shared pod (e.g. Olivia joined to identyclaw-agents-pod).
+  fleet_nginx="${HERMES_DEFAULT_NGINX_CONTAINER:-hermes-nginx}"
+  # Never destroy a foreign/shared pod (Olivia on hermes-agent-pod or legacy openclaw pod).
   case "$pod_name" in
     hermes-agent-pod|hermes-*-pod) owned_pod=1 ;;
     *) owned_pod=0 ;;
   esac
-  if [[ "${HERMES_PROFILE:-default}" != "default" && "$pod_name" == "identyclaw-agents-pod" ]]; then
-    owned_pod=0
+  if [[ "${HERMES_PROFILE:-default}" != "default" ]]; then
+    if [[ "$pod_name" == "identyclaw-agents-pod" ]]; then
+      owned_pod=0
+    fi
+    if [[ "$pod_name" == "${HERMES_DEFAULT_POD:-hermes-agent-pod}" ]]; then
+      # Joined fleet pod: stop this profile's gateway/auth only.
+      owned_pod=0
+      share_nginx=1
+    fi
   fi
   podman stop "$auth_name" 2>/dev/null || true
   podman rm -f "$auth_name" 2>/dev/null || true
   podman stop "$name" 2>/dev/null || true
   podman rm -f "$name" 2>/dev/null || true
-  podman stop "$nginx_name" 2>/dev/null || true
-  podman rm -f "$nginx_name" 2>/dev/null || true
+  # Drop leftover per-profile nginx from the old :8443 cutover.
+  if [[ "$share_nginx" == "1" ]]; then
+    if [[ "$nginx_name" != "$fleet_nginx" ]]; then
+      podman stop "$nginx_name" 2>/dev/null || true
+      podman rm -f "$nginx_name" 2>/dev/null || true
+    fi
+    podman stop "hermes-${HERMES_PROFILE}-nginx" 2>/dev/null || true
+    podman rm -f "hermes-${HERMES_PROFILE}-nginx" 2>/dev/null || true
+  else
+    podman stop "$nginx_name" 2>/dev/null || true
+    podman rm -f "$nginx_name" 2>/dev/null || true
+  fi
   if [[ "$owned_pod" == "1" ]] && podman pod exists "$pod_name" 2>/dev/null; then
     podman pod rm -f "$pod_name" 2>/dev/null || true
   fi
