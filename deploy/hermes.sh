@@ -27,6 +27,8 @@
 #   ./hermes.sh himalaya-test
 #   ./hermes.sh generate-certs [--force]
 #   ./hermes.sh build-nginx
+#   ./hermes.sh -p olivia|default|all start|stop|status
+#   ./hermes.sh migrate-olivia [--dry-run] [--cutover]
 
 set -euo pipefail
 [[ "${TRACE:-0}" == 1 ]] && set -x
@@ -257,7 +259,7 @@ cmd_start_standalone() {
 }
 
 cmd_start_pod() {
-  local app z args=() nginx_conf
+  local app z args=() nginx_conf join_existing=0
   app="$(hermes_app_dir)"
   z="$(selinux_mount_suffix)"
 
@@ -272,6 +274,7 @@ cmd_start_pod() {
     build_hermes_nginx_image
   fi
 
+  # Stop only this profile's containers; keep foreign pods (Olivia → openclaw pod).
   stop_hermes_pod_stack
 
   # nginx owns HERMES_INGRESS_PORT (8443 for Telegram). Adapter must listen elsewhere.
@@ -280,29 +283,34 @@ cmd_start_pod() {
     echo "Note: TELEGRAM_WEBHOOK_PORT set to 8643 (nginx listens on ${HERMES_INGRESS_PORT})" >&2
   fi
 
-  # Optional Passport mint-time aliases (e.g. HERMES_EXTRA_INGRESS_PORTS=7443 →
-  # host:7443 → container HERMES_INGRESS_PORT). Same nginx TLS listener.
-  local pod_ports=(
-    -p "${HERMES_INGRESS_PORT}:${HERMES_INGRESS_PORT}"
-    -p "${HERMES_API_PORT}:8642"
-  )
-  local extras extra_port
-  extras="${HERMES_EXTRA_INGRESS_PORTS:-}"
-  extras="${extras//,/ }"
-  for extra_port in $extras; do
-    extra_port="${extra_port//[[:space:]]/}"
-    [[ -n "$extra_port" ]] || continue
-    if [[ "$extra_port" == "${HERMES_INGRESS_PORT}" || "$extra_port" == "8642" ]]; then
-      continue
-    fi
-    pod_ports+=(-p "${extra_port}:${HERMES_INGRESS_PORT}")
-    echo "Extra ingress publish: host :${extra_port} → nginx :${HERMES_INGRESS_PORT}"
-  done
+  if podman pod exists "$HERMES_POD" 2>/dev/null; then
+    join_existing=1
+    echo "Joining existing pod ${HERMES_POD} (profile=${HERMES_PROFILE:-default})"
+  else
+    # Optional Passport mint-time aliases (e.g. HERMES_EXTRA_INGRESS_PORTS=7443 →
+    # host:7443 → container HERMES_INGRESS_PORT). Same nginx TLS listener.
+    local pod_ports=(
+      -p "${HERMES_INGRESS_PORT}:${HERMES_INGRESS_PORT}"
+      -p "${HERMES_API_PORT}:8642"
+    )
+    local extras extra_port
+    extras="${HERMES_EXTRA_INGRESS_PORTS:-}"
+    extras="${extras//,/ }"
+    for extra_port in $extras; do
+      extra_port="${extra_port//[[:space:]]/}"
+      [[ -n "$extra_port" ]] || continue
+      if [[ "$extra_port" == "${HERMES_INGRESS_PORT}" || "$extra_port" == "8642" ]]; then
+        continue
+      fi
+      pod_ports+=(-p "${extra_port}:${HERMES_INGRESS_PORT}")
+      echo "Extra ingress publish: host :${extra_port} → nginx :${HERMES_INGRESS_PORT}"
+    done
 
-  echo "Creating pod ${HERMES_POD} (ingress ${HERMES_INGRESS_PORT}, API ${HERMES_API_PORT}) ..."
-  podman pod create \
-    --name "$HERMES_POD" \
-    "${pod_ports[@]}"
+    echo "Creating pod ${HERMES_POD} (ingress ${HERMES_INGRESS_PORT}, API ${HERMES_API_PORT}) ..."
+    podman pod create \
+      --name "$HERMES_POD" \
+      "${pod_ports[@]}"
+  fi
 
   hermes_gateway_run_args args
   args+=(--pod "$HERMES_POD")
@@ -318,29 +326,47 @@ cmd_start_pod() {
   nginx_conf="${app}/nginx/nginx.conf"
   echo "Starting nginx sidecar ${HERMES_NGINX_CONTAINER} ..."
   # All binds under APP_DIR (certs, logs, rendered conf, copied nginx/inc).
+  # When joining openclaw pod, prefer fleet/shared certs if profile certs missing.
+  local cert_dir="${app}/certs"
+  if [[ ! -s "${cert_dir}/fullchain.pem" && -s "$(hermes_fleet_dir)/certs/fullchain.pem" ]]; then
+    cert_dir="$(hermes_fleet_dir)/certs"
+  fi
+  # Olivia cutover: reuse OpenClaw LE certs (SAN includes oliviatara/joe/daniel).
+  if [[ ! -s "${cert_dir}/fullchain.pem" && -s "${HOME}/openclaw-agents-app/certs/fullchain.pem" ]]; then
+    cert_dir="${HOME}/openclaw-agents-app/certs"
+  fi
   podman run -d \
     --pod "$HERMES_POD" \
     --name "$HERMES_NGINX_CONTAINER" \
     --replace \
     --restart always \
-    -v "${app}/certs:/app/certs:ro${z}" \
+    -v "${cert_dir}:/app/certs:ro${z}" \
     -v "${app}/logs/nginx:/var/log/nginx${z}" \
     -v "${app}/nginx/inc:/etc/nginx/inc:ro${z}" \
     -v "${nginx_conf}:/etc/nginx/nginx.conf:ro${z}" \
     "$HERMES_NGINX_IMAGE"
 
-  echo "Started pod ${HERMES_POD} (restart=always)"
+  if [[ "$join_existing" == "1" ]]; then
+    echo "Started profile ${HERMES_PROFILE:-default} in existing pod ${HERMES_POD}"
+  else
+    echo "Started pod ${HERMES_POD} (restart=always)"
+  fi
   echo "  API:      http://127.0.0.1:${HERMES_API_PORT}"
   echo "  Ingress:  https://${HERMES_PUBLIC_HOST}:${HERMES_INGRESS_PORT}/health"
   echo "  Webhooks: https://${HERMES_PUBLIC_HOST}:${HERMES_INGRESS_PORT}/webhooks/<route>"
   echo "  Telegram: https://${HERMES_PUBLIC_HOST}:${HERMES_INGRESS_PORT}/telegram"
 }
 
-cmd_start() {
+cmd_start_one() {
   require_podman
   ensure_app_layout
   ensure_idcp_layout
   load_env
+  # load_env sources fleet HERMES_* (Lemuel) first — re-apply the selected profile
+  # so AGENT_B_*/homes/<id> overrides win for non-default profiles.
+  if [[ -n "${HERMES_PROFILE:-}" ]]; then
+    select_profile "$HERMES_PROFILE"
+  fi
 
   # Rootless Podman: linger so pods survive SSH/Cursor logout (SKIP_LINGER=1 to skip).
   bash "${HERMES_ROOT}/scripts/ensure-podman-linger.sh" || true
@@ -357,10 +383,15 @@ cmd_start() {
     # Ensure toggles land in .env after pod-mode defaults.
     sync_gateway_env_file || true
     ensure_webhook_pod_layout
-    ensure_tls_certs
+    # Skip self-signed generation when joining a pod that already has shared certs.
+    if [[ ! -s "$(hermes_app_dir)/certs/fullchain.pem" ]] \
+      && [[ ! -s "$(hermes_fleet_dir)/certs/fullchain.pem" ]] \
+      && [[ ! -s "${HOME}/openclaw-agents-app/certs/fullchain.pem" ]]; then
+      ensure_tls_certs || true
+    fi
     ensure_hermes_nginx_conf
     ensure_webhook_config_seed || true
-    normalize_tls_certs
+    normalize_tls_certs || true
   fi
 
   # Stage a host-readable .env copy for podman --env-file (app tree becomes
@@ -402,6 +433,17 @@ cmd_start() {
   else
     podman ps --filter "name=^${HERMES_CONTAINER}$" --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
   fi
+}
+
+cmd_start() {
+  local targets t
+  targets="$(resolve_profile_targets "${1:-}")"
+  for t in $targets; do
+    echo "==> start profile ${t}"
+    select_profile "$t"
+    ensure_profile_home "$t"
+    cmd_start_one
+  done
 }
 
 cmd_init() {
@@ -1006,43 +1048,55 @@ cmd_idcp() {
 }
 
 cmd_stop() {
+  local targets t
   require_podman
-  load_env
-  if hermes_is_pod_mode || podman pod exists "${HERMES_POD:-hermes-agent-pod}" 2>/dev/null; then
-    stop_hermes_pod_stack
-    echo "Stopped pod ${HERMES_POD:-hermes-agent-pod}"
-  else
-    podman rm -f "$(identyclaw_auth_container)" 2>/dev/null || true
-    podman stop "$HERMES_CONTAINER" 2>/dev/null || true
-    podman rm -f "$HERMES_CONTAINER" 2>/dev/null || true
-    echo "Stopped ${HERMES_CONTAINER}"
-  fi
-  restore_app_ownership
+  targets="$(resolve_profile_targets "${1:-}")"
+  for t in $targets; do
+    echo "==> stop profile ${t}"
+    select_profile "$t"
+    load_env
+    if hermes_is_pod_mode || podman pod exists "${HERMES_POD:-hermes-agent-pod}" 2>/dev/null \
+      || container_is_running "${HERMES_CONTAINER:-hermes}" 2>/dev/null; then
+      stop_hermes_pod_stack
+      echo "Stopped containers for profile ${t} (pod ${HERMES_POD:-hermes-agent-pod})"
+    else
+      podman rm -f "$(identyclaw_auth_container)" 2>/dev/null || true
+      podman stop "$HERMES_CONTAINER" 2>/dev/null || true
+      podman rm -f "$HERMES_CONTAINER" 2>/dev/null || true
+      echo "Stopped ${HERMES_CONTAINER}"
+    fi
+    restore_app_ownership
+  done
 }
 
 cmd_status() {
+  local targets t
   require_podman
-  load_env
-  echo "Repo:    $HERMES_ROOT"
-  echo "App dir: $(hermes_app_dir)"
-  echo "Image:   ${HERMES_IMAGE:-?(run init)}"
-  echo "Mode:    ${HERMES_DEPLOY_MODE:-standalone}"
-  if hermes_is_pod_mode || podman pod exists "${HERMES_POD:-hermes-agent-pod}" 2>/dev/null; then
-    echo "Pod:     ${HERMES_POD:-hermes-agent-pod}"
-    echo "Nginx:   ${HERMES_NGINX_IMAGE:-}"
+  load_fleet_env_only
+  echo "Repo:     $HERMES_ROOT"
+  echo "Fleet:    $(hermes_fleet_dir)"
+  echo "Profiles: $(configured_profile_ids)"
+  echo "Image:    ${HERMES_IMAGE:-?(run init)}"
+  targets="$(resolve_profile_targets "${1:-}")"
+  for t in $targets; do
+    select_profile "$t"
+    load_env
+    echo ""
+    echo "── profile ${t} ──"
+    echo "  Home:    $(hermes_app_dir)"
+    echo "  Mode:    ${HERMES_DEPLOY_MODE:-standalone}"
+    echo "  Pod:     ${HERMES_POD:-}"
+    echo "  Container: ${HERMES_CONTAINER:-}"
     if [[ -n "${HERMES_PUBLIC_HOST:-}" ]]; then
-      echo "Ingress:  https://${HERMES_PUBLIC_HOST}:${HERMES_INGRESS_PORT:-8443}/health"
-      echo "Webhook:  https://${HERMES_PUBLIC_HOST}:${HERMES_INGRESS_PORT:-8443}/webhooks/<route>"
-      echo "Telegram: https://${HERMES_PUBLIC_HOST}:${HERMES_INGRESS_PORT:-8443}/telegram"
+      echo "  Ingress: https://${HERMES_PUBLIC_HOST}:${HERMES_INGRESS_PORT:-8443}/health"
     fi
-    podman ps -a --filter "pod=${HERMES_POD:-hermes-agent-pod}" \
-      --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}\t{{.Ports}}' || true
-  else
-    echo "API:      http://127.0.0.1:${HERMES_API_PORT}"
-    echo "Telegram: host ${HERMES_TELEGRAM_PORT} → container ${TELEGRAM_WEBHOOK_PORT} (Bot API allows 443/80/88/8443)"
-    podman ps -a --filter "name=^${HERMES_CONTAINER:-hermes}$" \
-      --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}\t{{.Ports}}'
-  fi
+    if container_is_running "${HERMES_CONTAINER:-}"; then
+      podman ps --filter "name=^${HERMES_CONTAINER}$" \
+        --format '  {{.Names}}  {{.Status}}  {{.Ports}}' || true
+    else
+      echo "  (gateway not running)"
+    fi
+  done
 }
 
 cmd_generate_certs() {
@@ -1194,20 +1248,80 @@ cmd_himalaya_test() {
   himalaya_test
 }
 
+cmd_migrate_olivia() {
+  bash "${HERMES_ROOT}/scripts/migrate-olivia-from-openclaw.sh" "$@"
+}
+
+# Optional leading profile selector: ./hermes.sh [-p PROFILE|all] <cmd> …
+# Also accepts legacy OpenClaw ids (agent-b → olivia, agent-l → default).
 main() {
-  local cmd="${1:-}"
+  local cmd profile_arg=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -p|--profile)
+        profile_arg="${2:-}"
+        shift 2 || true
+        ;;
+      --profile=*)
+        profile_arg="${1#--profile=}"
+        shift
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+  cmd="${1:-}"
   shift || true
+
+  # Bare profile as first positional for start/stop/status/logs: ./hermes.sh start olivia
+  case "$cmd" in
+    start|stop|status|logs)
+      if [[ -z "$profile_arg" && -n "${1:-}" ]]; then
+        case "$1" in
+          all|default|olivia|agent-b|agent-l|lemuel)
+            profile_arg="$1"
+            shift || true
+            ;;
+        esac
+      fi
+      ;;
+  esac
+
+  if [[ -n "$profile_arg" ]]; then
+    case "$cmd" in
+      start|stop|status)
+        # These commands iterate targets themselves.
+        ;;
+      logs|chat|exec|idcp|idcp-setup|idcp-install|identyclaw-peer-install|identyclaw-auth-start|identyclaw-auth-stop|himalaya-install|himalaya-password|himalaya-test|generate-certs|own)
+        select_profile "$(hermes_normalize_profile_id "$profile_arg")"
+        ;;
+    esac
+  fi
+
   case "$cmd" in
     init) cmd_init "$@" ;;
     nuke) cmd_nuke "$@" ;;
     setup) cmd_setup "$@" ;;
-    start) cmd_start "$@" ;;
-    stop) cmd_stop "$@" ;;
-    status) cmd_status "$@" ;;
-    logs) cmd_logs "$@" ;;
+    start) cmd_start "${profile_arg:-${1:-}}" ;;
+    stop) cmd_stop "${profile_arg:-${1:-}}" ;;
+    status) cmd_status "${profile_arg:-${1:-}}" ;;
+    logs)
+      [[ -n "$profile_arg" ]] || select_profile default
+      load_env
+      cmd_logs "$@"
+      ;;
     pull) cmd_pull "$@" ;;
-    chat) cmd_chat "$@" ;;
-    exec) cmd_exec "$@" ;;
+    chat)
+      [[ -n "$profile_arg" ]] || select_profile default
+      load_env
+      cmd_chat "$@"
+      ;;
+    exec)
+      [[ -n "$profile_arg" ]] || select_profile default
+      load_env
+      cmd_exec "$@"
+      ;;
     own) cmd_own "$@" ;;
     idcp-setup) cmd_idcp_setup "$@" ;;
     idcp-install) cmd_idcp_install "$@" ;;
@@ -1220,6 +1334,7 @@ main() {
     himalaya-test) cmd_himalaya_test "$@" ;;
     generate-certs) cmd_generate_certs "$@" ;;
     build-nginx) cmd_build_nginx "$@" ;;
+    migrate-olivia) cmd_migrate_olivia "$@" ;;
     -h|--help|help|"") usage ;;
     *)
       echo "Unknown command: $cmd" >&2

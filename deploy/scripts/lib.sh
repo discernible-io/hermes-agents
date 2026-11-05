@@ -5,18 +5,31 @@ set -euo pipefail
 
 HERMES_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Multi-profile (Hermes-native profiles/). Sourced early so hermes_app_dir can use it.
+# shellcheck source=lib-agents.sh
+source "${HERMES_ROOT}/scripts/lib-agents.sh"
+
 # Runtime config, secrets, skills, memories — sibling of the repo clone.
+# When a profile is selected (select_profile), HERMES_APP_DIR points at that home.
+# Otherwise returns the fleet root (default profile / legacy single-agent).
 hermes_app_dir() {
   if [[ -n "${HERMES_APP_DIR:-}" ]]; then
     printf '%s' "$HERMES_APP_DIR"
     return
   fi
-  # HERMES_ROOT is …/hermes-agents/deploy → sibling app is …/hermes-agents-app
-  printf '%s' "$(cd "${HERMES_ROOT}/../.." && pwd)/hermes-agents-app"
+  hermes_fleet_dir
 }
 
 hermes_env_file() {
-  echo "$(hermes_app_dir)/env.local"
+  # Prefer profile-local env.local; fall back to fleet.
+  local home fleet
+  home="$(hermes_app_dir)"
+  fleet="$(hermes_fleet_dir)"
+  if [[ -f "${home}/env.local" ]]; then
+    echo "${home}/env.local"
+  else
+    echo "${fleet}/env.local"
+  fi
 }
 
 # Hermes-native secrets store (API keys, bot tokens, WEBHOOK_SECRET, …).
@@ -148,14 +161,22 @@ require_setup_prereqs() {
 }
 
 load_env() {
-  local f
+  local f fleet_env
+  # Fleet knobs first (PROFILE_IDS, AGENT_* ports), then profile/legacy env.local.
+  fleet_env="$(hermes_fleet_dir)/env.local"
+  if [[ -r "$fleet_env" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$fleet_env"
+    set +a
+  fi
   f="$(hermes_env_file)"
-  if [[ -r "$f" ]]; then
+  if [[ -r "$f" && "$f" != "$fleet_env" ]]; then
     set -a
     # shellcheck disable=SC1090
     source "$f"
     set +a
-  elif container_is_running "${HERMES_CONTAINER:-hermes}" 2>/dev/null; then
+  elif [[ ! -r "$fleet_env" ]] && container_is_running "${HERMES_CONTAINER:-hermes}" 2>/dev/null; then
     # App dir owned by container UID — pull env.local via podman.
     local tmp
     tmp="$(mktemp)"
@@ -201,10 +222,12 @@ restore_app_ownership() {
 # Critical: HERMES_HOME/.env is mode 0600 — if owned by host-root (0), hermes cannot
 # even stat it and chat crashes with PermissionError.
 prepare_app_for_container() {
-  local app
+  local app fleet
   app="$(hermes_app_dir)"
+  fleet="$(hermes_fleet_dir)"
   [[ -d "$app" ]] || return 0
   # Drop stale locks from interrupted setup/gateway (often root-owned under userns).
+  # When preparing the fleet/default home, never recurse into homes/ (other profiles).
   if ! podman unshare bash -c "
     cd $(printf '%q' "$app") || exit 1
     rm -f gateway.lock gateway.pid \
@@ -212,10 +235,21 @@ prepare_app_for_container() {
       kanban.db-wal kanban.db-shm 2>/dev/null || true
     # Directory + contents must be hermes (10000), not host-root-mapped UID 0.
     # Exclude certs/ — nginx (UID 101) needs ownership; normalize_tls_certs handles it.
+    # Exclude homes/ at fleet root — each named profile owns its own tree.
     chown 10000:10000 . 2>/dev/null || true
+    # Keep fleet root traversable so the host can reach homes/<profile> while
+    # default gateway is running (env.local stays 0600).
+    chmod 711 . 2>/dev/null || true
     for item in * .[!.]* ..?*; do
       [ -e \"\$item\" ] || continue
       [ \"\$item\" = 'certs' ] && continue
+      if [ $(printf '%q' "$app") = $(printf '%q' "$fleet") ] && [ \"\$item\" = 'homes' ]; then
+        chmod 755 \"\$item\" 2>/dev/null || true
+        continue
+      fi
+      if [ $(printf '%q' "$app") = $(printf '%q' "$fleet") ] && [ \"\$item\" = 'profiles' ]; then
+        continue
+      fi
       chown -R 10000:10000 \"\$item\" 2>/dev/null || true
     done
   "; then
@@ -1105,15 +1139,17 @@ require_pod_webhook_env() {
   fi
 }
 
-# nginx owns HERMES_INGRESS_PORT (8443 for Telegram). The adapter must listen on
-# a different pod-local port (8643) so nginx can proxy to it.
+# nginx owns HERMES_INGRESS_PORT (TLS). The Telegram adapter must listen on a
+# different pod-local port (8643) so nginx can proxy to it — even when ingress
+# is not 8443 (e.g. Lemuel :10443), otherwise render defaults to :8443 and
+# loops into the TLS listener.
 ensure_pod_internal_listen_ports() {
   hermes_is_pod_mode || return 0
   local envf ingress telegram
   envf="$(hermes_gateway_env_file)"
   ingress="${HERMES_INGRESS_PORT:-8443}"
   telegram="${TELEGRAM_WEBHOOK_PORT:-8443}"
-  if [[ "$telegram" == "$ingress" ]]; then
+  if [[ "$telegram" == "$ingress" || "$telegram" == "8443" ]]; then
     telegram=8643
     if [[ -f "$envf" ]]; then
       if grep -qE '^TELEGRAM_WEBHOOK_PORT=' "$envf" 2>/dev/null; then
@@ -1347,19 +1383,27 @@ PY
 }
 
 stop_hermes_pod_stack() {
-  local name nginx_name pod_name auth_name
+  local name nginx_name pod_name auth_name owned_pod=1
   load_env
   name="${HERMES_CONTAINER:-hermes}"
   nginx_name="${HERMES_NGINX_CONTAINER:-hermes-nginx}"
   auth_name="${HERMES_IDENTYCLAW_AUTH_CONTAINER:-hermes-identyclaw-auth}"
   pod_name="${HERMES_POD:-hermes-agent-pod}"
+  # Never destroy a foreign/shared pod (e.g. Olivia joined to identyclaw-agents-pod).
+  case "$pod_name" in
+    hermes-agent-pod|hermes-*-pod) owned_pod=1 ;;
+    *) owned_pod=0 ;;
+  esac
+  if [[ "${HERMES_PROFILE:-default}" != "default" && "$pod_name" == "identyclaw-agents-pod" ]]; then
+    owned_pod=0
+  fi
   podman stop "$auth_name" 2>/dev/null || true
   podman rm -f "$auth_name" 2>/dev/null || true
   podman stop "$name" 2>/dev/null || true
   podman rm -f "$name" 2>/dev/null || true
   podman stop "$nginx_name" 2>/dev/null || true
   podman rm -f "$nginx_name" 2>/dev/null || true
-  if podman pod exists "$pod_name" 2>/dev/null; then
+  if [[ "$owned_pod" == "1" ]] && podman pod exists "$pod_name" 2>/dev/null; then
     podman pod rm -f "$pod_name" 2>/dev/null || true
   fi
 }
