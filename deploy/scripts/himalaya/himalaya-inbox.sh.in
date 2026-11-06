@@ -1,9 +1,23 @@
 #!/bin/sh
 # List INBOX with sender email addresses (plain table omits addr).
-# Usage: sh scripts/himalaya-inbox.sh [PAGE_SIZE]
+# Usage: sh scripts/himalaya-inbox.sh [-a ACCOUNT] [PAGE_SIZE]
 set -eu
-PAGE_SIZE="${1:-10}"
-himalaya envelope list --folder INBOX --page-size "$PAGE_SIZE" --output json | node -e '
+ACCOUNT="__DEFAULT_ACCOUNT__"
+PAGE_SIZE="10"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -a|--account)
+      ACCOUNT="${2:?}"
+      shift 2
+      ;;
+    *)
+      PAGE_SIZE="$1"
+      shift
+      ;;
+  esac
+done
+echo "account=${ACCOUNT}"
+himalaya envelope list -a "$ACCOUNT" --folder INBOX --page-size "$PAGE_SIZE" --output json | node -e '
 const rows = JSON.parse(require("fs").readFileSync(0, "utf8"));
 if (!Array.isArray(rows) || rows.length === 0) {
   console.log("INBOX is empty");

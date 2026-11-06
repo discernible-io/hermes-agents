@@ -1,11 +1,23 @@
 #!/bin/sh
 # Delete message(s) by envelope ID, or all INBOX messages with --all.
-# Usage: sh scripts/himalaya-delete.sh <ID>...
-#        sh scripts/himalaya-delete.sh --all
+# Usage: sh scripts/himalaya-delete.sh [-a ACCOUNT] <ID>...
+#        sh scripts/himalaya-delete.sh [-a ACCOUNT] --all
 set -eu
+ACCOUNT="__DEFAULT_ACCOUNT__"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -a|--account)
+      ACCOUNT="${2:?}"
+      shift 2
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
 
 if [ "$#" -eq 1 ] && [ "$1" = "--all" ]; then
-  ids=$(himalaya envelope list --folder INBOX --output json | node -e '
+  ids=$(himalaya envelope list -a "$ACCOUNT" --folder INBOX --output json | node -e '
     const items = JSON.parse(require("fs").readFileSync(0, "utf8"));
     if (!Array.isArray(items) || items.length === 0) process.exit(0);
     process.stdout.write(items.map((e) => e.id).join(" "));
@@ -19,8 +31,8 @@ if [ "$#" -eq 1 ] && [ "$1" = "--all" ]; then
 fi
 
 if [ "$#" -eq 0 ]; then
-  echo "usage: himalaya-delete.sh <ID>... | --all" >&2
+  echo "usage: himalaya-delete.sh [-a ACCOUNT] <ID>... | --all" >&2
   exit 1
 fi
 
-himalaya message delete "$@"
+himalaya message delete -a "$ACCOUNT" "$@"

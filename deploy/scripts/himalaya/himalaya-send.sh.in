@@ -1,10 +1,44 @@
 #!/bin/sh
 # Headless outbound mail via Himalaya (no $EDITOR).
-# Usage: sh scripts/himalaya-send.sh TO SUBJECT [BODY]
+# Usage: sh scripts/himalaya-send.sh [-a ACCOUNT] TO SUBJECT [BODY]
 set -eu
-TO="${1:?usage: himalaya-send.sh TO SUBJECT [BODY]}"
-SUBJECT="${2:?usage: himalaya-send.sh TO SUBJECT [BODY]}"
+ACCOUNT="__DEFAULT_ACCOUNT__"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -a|--account)
+      ACCOUNT="${2:?}"
+      shift 2
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+TO="${1:?usage: himalaya-send.sh [-a ACCOUNT] TO SUBJECT [BODY]}"
+SUBJECT="${2:?usage: himalaya-send.sh [-a ACCOUNT] TO SUBJECT [BODY]}"
 BODY="${3:-}"
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+LOOKUP="${SCRIPT_DIR}/himalaya-accounts.tsv"
+EMAIL=""
+DISPLAY_NAME=""
+if [ -f "$LOOKUP" ]; then
+  # shellcheck disable=SC2034
+  while IFS='|' read -r name email display; do
+    case "$name" in
+      \#*|"") continue ;;
+    esac
+    if [ "$name" = "$ACCOUNT" ]; then
+      EMAIL="$email"
+      DISPLAY_NAME="$display"
+      break
+    fi
+  done <"$LOOKUP"
+fi
+if [ -z "$EMAIL" ]; then
+  echo "ERROR: unknown account '${ACCOUNT}' (see scripts/himalaya-accounts.tsv)" >&2
+  exit 1
+fi
 
 # Fail fast when SMTP is unreachable (stale --add-host pin, egress block, etc.).
 # Without this, himalaya hangs until the tool/cron timeout (often 90s+).
@@ -29,8 +63,8 @@ then
   exit 75
 fi
 
-himalaya message send <<MAIL
-From: __DISPLAY_NAME__ <__EMAIL__>
+himalaya message send -a "$ACCOUNT" <<MAIL
+From: ${DISPLAY_NAME} <${EMAIL}>
 To: ${TO}
 Subject: ${SUBJECT}
 

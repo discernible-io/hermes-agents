@@ -89,7 +89,7 @@ AlmaLinux / RHEL: `podman-restart.service` only restarts containers with policy 
 | `./hermes.sh idcp-install` | Install IdentyClaw `idcp` helper + skill into app dir |
 | `./hermes.sh idcp …` | Passport ops (`enroll`, `ensure_session`, `create_hola`, …) |
 | `./hermes.sh himalaya-install` | Install Himalaya CLI + Migadu config into app dir |
-| `./hermes.sh himalaya-password` | Store Migadu IMAP/SMTP password |
+| `./hermes.sh himalaya-password` | Store Migadu IMAP/SMTP password (`--from-infra` imports infra-app/mail) |
 | `./hermes.sh himalaya-test` | IMAP smoke test (`envelope list`) |
 | `./hermes.sh generate-certs` | Self-signed TLS PEMs for pod ingress (`--force` to replace) |
 | `./hermes.sh build-nginx` | Build local `hermes-nginx` sidecar image |
@@ -242,7 +242,27 @@ recreated with the Camofox ports.
 
 ## Himalaya email (Migadu)
 
-Agent mailbox for read/write from terminal sandboxes (not the Email gateway adapter).
+Agent mailbox(es) for read/write from terminal sandboxes (not the Email gateway adapter).
+
+### Role inboxes from infra-app (recommended)
+
+When mailboxes already live under `../infra-app/mail` (`smtp.env` + `smtp-password.*`):
+
+```bash
+# in hermes-agents-app/env.local
+HERMES_MAIL_IMPORT_DIR=/home/dedalo43/infra-app/mail
+# optional: HERMES_MAIL_DEFAULT=founder
+
+./hermes.sh himalaya-install          # config + copy passwords from infra-app
+./hermes.sh himalaya-test
+./hermes.sh start                     # refreshes docker_volumes + SMTP IPv4 pin
+```
+
+Or import passwords later: `./hermes.sh himalaya-password --from-infra`.
+
+Himalaya gets one account per `SMTP_ACCOUNTS` entry (e.g. `github`, `founder`, `linkedin`) with the same From display names as infra-app. Helpers take `-a ACCOUNT`.
+
+### Single mailbox (legacy)
 
 ```bash
 # in hermes-agents-app/env.local
@@ -253,25 +273,22 @@ HERMES_EMAIL_DISPLAY_NAME=Hermes Trimegisto
 ./hermes.sh himalaya-install
 ./hermes.sh himalaya-password
 ./hermes.sh himalaya-test
-./hermes.sh start            # refreshes docker_volumes + SMTP IPv4 pin
-
-# If SMTP still times out after a pin change: ExtraHosts are immutable on
-# long-lived sandboxes. himalaya-test / ensure_sandbox_volumes remove
-# hermes-* containers whose smtp.migadu.com pin disagrees with MIGADU_SMTP_IPV4.
-# Or: docker rm -f $(docker ps -aq --filter label=hermes-agent=1)
+./hermes.sh start
 ```
+
+If SMTP still times out after a pin change: ExtraHosts are immutable on long-lived sandboxes. `himalaya-test` / `ensure_sandbox_volumes` remove hermes-* containers whose `smtp.migadu.com` pin disagrees with `MIGADU_SMTP_IPV4`. Or: `docker rm -f $(docker ps -aq --filter label=hermes-agent=1)`.
 
 Layout under the app volume:
 
 | Path | Role |
 |------|------|
 | `bin/himalaya` | CLI binary |
-| `secrets/himalaya/` | IMAP/SMTP password helpers |
-| `sandboxes/docker/default/home/.config/himalaya/` | config.toml |
-| `sandboxes/docker/default/workspace/scripts/himalaya-*.sh` | headless helpers |
+| `secrets/himalaya/` | per-account `.pass` / `.sh` (plus legacy `imap`/`smtp`) |
+| `sandboxes/docker/default/home/.config/himalaya/` | multi-account `config.toml` |
+| `sandboxes/docker/default/workspace/scripts/himalaya-*.sh` | headless helpers (`-a`) |
 | `skills/email/himalaya/SKILL.md` | skill override (pre-configured) |
 
-In chat: ask Hermes to check the inbox with himalaya / `sh scripts/himalaya-inbox.sh`.
+In chat: ask Hermes to check an inbox with `sh scripts/himalaya-inbox.sh -a founder`.
 
 ## Updates
 

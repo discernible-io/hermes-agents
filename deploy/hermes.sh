@@ -1439,16 +1439,27 @@ cmd_himalaya_install() {
   require_podman
   ensure_app_layout
   load_env
-  export HERMES_EMAIL="${HERMES_EMAIL:-hermes@agenthood.me}"
-  export HERMES_EMAIL_DISPLAY_NAME="${HERMES_EMAIL_DISPLAY_NAME:-Hermes Trimegisto}"
-  echo "Installing Himalaya for ${HERMES_EMAIL} ..."
+  if ! himalaya_has_accounts; then
+    export HERMES_EMAIL="${HERMES_EMAIL:-hermes@agenthood.me}"
+    export HERMES_EMAIL_DISPLAY_NAME="${HERMES_EMAIL_DISPLAY_NAME:-Hermes Trimegisto}"
+  fi
+  echo "Installing Himalaya accounts:"
+  himalaya_account_defs | while IFS='|' read -r acct email display def; do
+    if [[ "$def" == "1" ]]; then
+      echo "  - ${acct}: ${email} (${display}) [default]"
+    else
+      echo "  - ${acct}: ${email} (${display})"
+    fi
+  done
   install_himalaya_binary
   write_himalaya_config
   write_himalaya_helpers
-  if [[ -n "${HERMES_MAIL_PASSWORD:-}" ]]; then
+  if [[ -n "${HERMES_MAIL_IMPORT_DIR:-}" && -d "${HERMES_MAIL_IMPORT_DIR}" ]]; then
+    import_himalaya_passwords_from_dir "${HERMES_MAIL_IMPORT_DIR}"
+  elif [[ -n "${HERMES_MAIL_PASSWORD:-}" ]]; then
     write_himalaya_secrets "$HERMES_MAIL_PASSWORD"
   else
-    echo "Password not in env — next: ./hermes.sh himalaya-password"
+    echo "Password not in env — next: ./hermes.sh himalaya-password [--from-infra]"
   fi
   if container_is_running "${HERMES_CONTAINER:-hermes}"; then
     ensure_sandbox_volumes || true
@@ -1460,20 +1471,43 @@ cmd_himalaya_password() {
   require_podman
   ensure_app_layout
   load_env
-  local password="${1:-${HERMES_MAIL_PASSWORD:-}}"
+  local arg="${1:-}"
+  if [[ "$arg" == "--from-infra" || "$arg" == "--import" ]]; then
+    local dir="${HERMES_MAIL_IMPORT_DIR:-}"
+    if [[ -z "$dir" ]]; then
+      # Sibling of hermes-agents by default
+      dir="$(cd "${HERMES_ROOT}/../infra-app/mail" 2>/dev/null && pwd || true)"
+    fi
+    [[ -n "$dir" && -d "$dir" ]] || {
+      echo "usage: ./hermes.sh himalaya-password --from-infra" >&2
+      echo "  set HERMES_MAIL_IMPORT_DIR to infra-app/mail (smtp.env + smtp-password.*)" >&2
+      exit 1
+    }
+    export HERMES_MAIL_IMPORT_DIR="$dir"
+    import_himalaya_passwords_from_dir "$dir"
+    return
+  fi
+  local password="${arg:-${HERMES_MAIL_PASSWORD:-}}"
+  local acct="${2:-}"
   if [[ -z "$password" ]]; then
     if [[ -t 0 ]]; then
-      printf "Migadu password for %s: " "${HERMES_EMAIL:-hermes@agenthood.me}" >&2
+      acct="${acct:-$(himalaya_default_account 2>/dev/null || echo default)}"
+      printf "Migadu password for account %s: " "$acct" >&2
       # shellcheck disable=SC2162
       read -rs password
       echo >&2
     else
-      echo "usage: ./hermes.sh himalaya-password [PASSWORD]" >&2
-      echo "  or set HERMES_MAIL_PASSWORD in hermes-agents-app/env.local" >&2
+      echo "usage: ./hermes.sh himalaya-password [--from-infra | PASSWORD [ACCOUNT]]" >&2
+      echo "  or set HERMES_MAIL_PASSWORD / HERMES_MAIL_IMPORT_DIR in hermes-agents-app/env.local" >&2
       exit 1
     fi
   fi
-  write_himalaya_secrets "$password"
+  if [[ -n "$acct" ]]; then
+    write_himalaya_account_secret "$acct" "$password" \
+      "$([[ "$acct" == "$(himalaya_default_account 2>/dev/null || true)" ]] && echo 1 || echo 0)"
+  else
+    write_himalaya_secrets "$password"
+  fi
 }
 
 cmd_himalaya_test() {
