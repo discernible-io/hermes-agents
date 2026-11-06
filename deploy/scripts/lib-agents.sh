@@ -293,6 +293,25 @@ select_profile() {
   v="$(profile_env_value "$id" DEPLOY_MODE "${HERMES_DEPLOY_MODE:-}")"
   [[ -n "$v" ]] && export HERMES_DEPLOY_MODE="$v"
 
+  # Camofox (per-profile browser sidecar — see profile_camofox_* below).
+  export HERMES_CAMOFOX_CONTAINER
+  export HERMES_CAMOFOX_STATE
+  export HERMES_CAMOFOX_NOVNC_PORT
+  export HERMES_CAMOFOX_API_PORT
+  export HERMES_CAMOFOX_VNC_PORT
+  export HERMES_CAMOFOX_URL
+  HERMES_CAMOFOX_CONTAINER="$(profile_camofox_container "$id")"
+  HERMES_CAMOFOX_STATE="$(profile_camofox_state "$id")"
+  HERMES_CAMOFOX_NOVNC_PORT="$(profile_camofox_novnc_port "$id")"
+  HERMES_CAMOFOX_API_PORT="$(profile_camofox_api_port "$id")"
+  HERMES_CAMOFOX_VNC_PORT="$(profile_camofox_vnc_port "$id")"
+  HERMES_CAMOFOX_URL="http://127.0.0.1:${HERMES_CAMOFOX_API_PORT}"
+  if profile_camofox_enabled "$id"; then
+    export HERMES_CAMOFOX=1
+  else
+    export HERMES_CAMOFOX=0
+  fi
+
   # Source profile-local env.local if present (non-secrets).
   if [[ -r "${home}/env.local" ]]; then
     set -a
@@ -407,5 +426,181 @@ copy_secret_file_if_absent() {
   mkdir -p "$(dirname "$dst")"
   cp -a "$src" "$dst"
   chmod 600 "$dst" 2>/dev/null || true
+  return 0
+}
+
+# --- Camofox (per-profile browser sidecar) -----------------------------------
+# Opt-in via AGENT_*_CAMOFOX / HERMES_CAMOFOX (1/true/yes). Default profile is
+# on when unset (LinkedIn session for Lemuel). Explicit 0/false/no disables.
+# noVNC is loopback-only and is NOT part of infra-app public ports.
+
+profile_camofox_truthy() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+profile_camofox_falsy() {
+  case "${1:-}" in
+    0|false|FALSE|no|NO|off|OFF) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+profile_camofox_enabled() {
+  local id raw
+  id="$(hermes_normalize_profile_id "${1:-${HERMES_PROFILE:-default}}")"
+  raw="$(profile_env_value "$id" CAMOFOX "")"
+  if [[ -z "$raw" && "$id" == "default" ]]; then
+    raw="${HERMES_CAMOFOX:-}"
+  fi
+  if profile_camofox_falsy "$raw"; then
+    return 1
+  fi
+  if profile_camofox_truthy "$raw"; then
+    return 0
+  fi
+  # Backward compatible: Lemuel keeps Camofox unless explicitly disabled.
+  [[ "$id" == "default" ]]
+}
+
+profile_camofox_container() {
+  local id
+  id="$(hermes_normalize_profile_id "${1:-${HERMES_PROFILE:-default}}")"
+  if [[ "$id" == "default" ]]; then
+    echo "${HERMES_DEFAULT_CAMOFOX_CONTAINER:-hermes-camofox}"
+  else
+    echo "hermes-${id}-camofox"
+  fi
+}
+
+# Persist browser profiles outside the app dir so nuke/start keep LinkedIn login.
+# Default keeps the legacy path (~/.local/share/hermes-camofox) so existing
+# sessions survive; named profiles use a subdirectory.
+profile_camofox_state() {
+  local id base
+  id="$(hermes_normalize_profile_id "${1:-${HERMES_PROFILE:-default}}")"
+  base="${HERMES_CAMOFOX_STATE_ROOT:-${HOME}/.local/share/hermes-camofox}"
+  if [[ "$id" == "default" ]]; then
+    # Keep legacy flat dir when it already holds the LinkedIn browser profile.
+    if [[ -s "${base}/vnc-password" || -d "${base}/profiles" ]]; then
+      printf '%s' "$base"
+      return 0
+    fi
+    printf '%s' "${base}/default"
+  else
+    printf '%s' "${base}/${id}"
+  fi
+}
+
+# Host loopback noVNC publish (and container NOVNC_PORT). Unique per profile.
+profile_camofox_novnc_port() {
+  local id explicit
+  id="$(hermes_normalize_profile_id "${1:-${HERMES_PROFILE:-default}}")"
+  explicit="$(profile_env_value "$id" CAMOFOX_NOVNC_PORT "")"
+  if [[ -n "$explicit" ]]; then
+    printf '%s' "$explicit"
+    return 0
+  fi
+  case "$id" in
+    default) echo "${HERMES_CAMOFOX_NOVNC_PORT:-6080}" ;;
+    olivia) echo 6081 ;;
+    cornelius) echo 6082 ;;
+    *)
+      # Stable-ish fallback in 6083–6182 from name hash.
+      printf '%s' "$(awk -v s="$id" 'BEGIN{
+        h=0; for(i=1;i<=length(s);i++) h=(h*33+index("abcdefghijklmnopqrstuvwxyz0123456789",substr(s,i,1)))%100;
+        print 6083+h
+      }')"
+      ;;
+  esac
+}
+
+# Camofox control API (CAMOFOX_URL). Unique when multiple share a pod netns.
+profile_camofox_api_port() {
+  local id explicit
+  id="$(hermes_normalize_profile_id "${1:-${HERMES_PROFILE:-default}}")"
+  explicit="$(profile_env_value "$id" CAMOFOX_API_PORT "")"
+  if [[ -n "$explicit" ]]; then
+    printf '%s' "$explicit"
+    return 0
+  fi
+  case "$id" in
+    default) echo 9377 ;;
+    olivia) echo 9378 ;;
+    cornelius) echo 9379 ;;
+    *)
+      printf '%s' "$(awk -v s="$id" 'BEGIN{
+        h=0; for(i=1;i<=length(s);i++) h=(h*33+index("abcdefghijklmnopqrstuvwxyz0123456789",substr(s,i,1)))%100;
+        print 9380+h
+      }')"
+      ;;
+  esac
+}
+
+# x11vnc RFB port — must be unique in a shared pod netns.
+profile_camofox_vnc_port() {
+  local id explicit
+  id="$(hermes_normalize_profile_id "${1:-${HERMES_PROFILE:-default}}")"
+  explicit="$(profile_env_value "$id" CAMOFOX_VNC_PORT "")"
+  if [[ -n "$explicit" ]]; then
+    printf '%s' "$explicit"
+    return 0
+  fi
+  case "$id" in
+    default) echo 5900 ;;
+    olivia) echo 5901 ;;
+    cornelius) echo 5902 ;;
+    *)
+      printf '%s' "$(awk -v s="$id" 'BEGIN{
+        h=0; for(i=1;i<=length(s);i++) h=(h*33+index("abcdefghijklmnopqrstuvwxyz0123456789",substr(s,i,1)))%100;
+        print 5903+h
+      }')"
+      ;;
+  esac
+}
+
+# Space-separated profile ids that run Camofox inside the given pod.
+profiles_with_camofox_on_pod() {
+  local pod_name="${1:?pod name}" id out=""
+  load_fleet_env_only
+  for id in $(configured_profile_ids); do
+    profile_camofox_enabled "$id" || continue
+    [[ "$(profile_pod "$id")" == "$pod_name" ]] || continue
+    if [[ -z "$out" ]]; then out="$id"; else out="$out $id"; fi
+  done
+  printf '%s' "$out"
+}
+
+# Append -p 127.0.0.1:NOVNC:NOVNC for every Camofox profile on this pod.
+append_camofox_pod_publish_args() {
+  local pod_name="${1:?pod name}"
+  local -n _ports_ref="$2"
+  local id novnc seen=" "
+  for id in $(profiles_with_camofox_on_pod "$pod_name"); do
+    novnc="$(profile_camofox_novnc_port "$id")"
+    case "$seen" in
+      *" ${novnc} "*) continue ;;
+    esac
+    seen="${seen}${novnc} "
+    _ports_ref+=(-p "127.0.0.1:${novnc}:${novnc}")
+    echo "Camofox noVNC publish: profile ${id} → 127.0.0.1:${novnc}"
+  done
+}
+
+pod_publishes_host_port() {
+  local pod_name="${1:?}" port="${2:?}" bindings
+  bindings="$(podman pod inspect "$pod_name" --format '{{json .InfraConfig.PortBindings}}' 2>/dev/null || true)"
+  [[ -n "$bindings" && "$bindings" == *"\"${port}/tcp\""* ]]
+}
+
+# True when every Camofox profile on this pod has its noVNC port published.
+pod_has_all_camofox_novnc_ports() {
+  local pod_name="${1:?}" id novnc
+  for id in $(profiles_with_camofox_on_pod "$pod_name"); do
+    novnc="$(profile_camofox_novnc_port "$id")"
+    pod_publishes_host_port "$pod_name" "$novnc" || return 1
+  done
   return 0
 }

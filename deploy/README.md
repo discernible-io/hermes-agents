@@ -209,6 +209,37 @@ writes `terminal.docker_volumes` for idcp + secrets.
 To enable iron-proxy later: set `HERMES_EGRESS=1` in `env.local`, run
 `./hermes.sh exec -- hermes egress setup`, then `./hermes.sh start`.
 
+## Camofox / LinkedIn (per profile)
+
+Camofox is a **per-profile** sidecar in the multi-home layout (same pattern as
+auth/nginx containers).
+
+| Knob | Meaning |
+|------|---------|
+| `HERMES_CAMOFOX` / `AGENT_L_CAMOFOX` | default (Lemuel); **on** when unset |
+| `AGENT_B_CAMOFOX=1` | enable for olivia |
+| `AGENT_C_CAMOFOX=1` | enable for cornelius |
+| `AGENT_*_CAMOFOX_NOVNC_PORT` | loopback noVNC (defaults 6080 / 6081 / 6082) |
+| `AGENT_*_CAMOFOX_API_PORT` | in-pod API (defaults 9377 / 9378 / 9379) |
+
+`./hermes.sh start` (for an enabled profile) starts `hermes-camofox` or
+`hermes-<id>-camofox`, writes `CAMOFOX_URL` into that home’s `.env`, and when
+**creating** the pod publishes **noVNC on loopback only**. Those ports are
+**not** in `infra-app` public/firewall allowlists.
+
+Tunnel (Cursor Ports or `ssh -L <novnc>:127.0.0.1:<novnc> …`), open
+`http://127.0.0.1:<novnc>/vnc.html`, unlock with
+`~/.local/share/hermes-camofox/vnc-password` (default) or
+`~/.local/share/hermes-camofox/<id>/vnc-password`, then sign into LinkedIn in
+that browser. Do not paste the LinkedIn password into chat. A black noVNC
+screen means no tab is painting yet — `start` opens LinkedIn login for the
+default profile (`HERMES_CAMOFOX_LANDING_URL` / `AGENT_*_CAMOFOX_LANDING_URL`
+to override). Refresh the noVNC page after connect.
+
+`LINKEDIN_ACCESS_TOKEN` remains identity-only. Foreign `JOIN_POD` targets may
+still run the in-pod API without a host noVNC publish until that pod is
+recreated with the Camofox ports.
+
 ## Himalaya email (Migadu)
 
 Agent mailbox for read/write from terminal sandboxes (not the Email gateway adapter).

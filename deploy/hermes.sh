@@ -101,6 +101,138 @@ identyclaw_auth_container() {
   printf '%s' "${HERMES_IDENTYCLAW_AUTH_CONTAINER:-hermes-identyclaw-auth}"
 }
 
+camofox_container() {
+  printf '%s' "${HERMES_CAMOFOX_CONTAINER:-$(profile_camofox_container "${HERMES_PROFILE:-default}")}"
+}
+
+# Write CAMOFOX_URL into the profile gateway .env (host-writable phase).
+ensure_camofox_gateway_env() {
+  local envf url
+  profile_camofox_enabled "${HERMES_PROFILE:-default}" || return 0
+  url="${HERMES_CAMOFOX_URL:-http://127.0.0.1:$(profile_camofox_api_port "${HERMES_PROFILE:-default}")}"
+  envf="$(hermes_gateway_env_file)"
+  upsert_env_local_kv "$envf" CAMOFOX_URL "$url" || true
+}
+
+# Persistent Camoufox browser per profile. noVNC is loopback-only (not in
+# infra-app public ports). Hermes reaches CAMOFOX_URL via the shared pod netns.
+start_camofox_container() {
+  local state z name image passfile novnc api_port vnc_port profile
+  profile="${HERMES_PROFILE:-default}"
+  profile_camofox_enabled "$profile" || return 0
+
+  if ! hermes_is_pod_mode || ! podman pod exists "${HERMES_POD:-}" 2>/dev/null; then
+    echo "Camofox requires pod mode with an existing pod (${HERMES_POD:-unset}); skipping." >&2
+    return 0
+  fi
+
+  state="${HERMES_CAMOFOX_STATE:-$(profile_camofox_state "$profile")}"
+  z="$(selinux_mount_suffix)"
+  name="$(camofox_container)"
+  image="${HERMES_CAMOFOX_IMAGE:-ghcr.io/jo-inc/camofox-browser:1.18.1}"
+  novnc="${HERMES_CAMOFOX_NOVNC_PORT:-$(profile_camofox_novnc_port "$profile")}"
+  api_port="${HERMES_CAMOFOX_API_PORT:-$(profile_camofox_api_port "$profile")}"
+  vnc_port="${HERMES_CAMOFOX_VNC_PORT:-$(profile_camofox_vnc_port "$profile")}"
+
+  mkdir -p "$state"
+  chmod 700 "$state"
+  passfile="${state}/vnc-password"
+  if [[ ! -s "$passfile" ]]; then
+    umask 077
+    openssl rand -base64 18 >"$passfile"
+  fi
+  chmod 600 "$passfile"
+  umask 077
+  {
+    printf 'CAMOFOX_PORT=%s\n' "$api_port"
+    printf 'ENABLE_VNC=1\n'
+    printf 'VNC_BIND=0.0.0.0\n'
+    printf 'NOVNC_PORT=%s\n' "$novnc"
+    printf 'VNC_PORT=%s\n' "$vnc_port"
+    printf 'BROWSER_IDLE_TIMEOUT_MS=0\n'
+    printf 'VNC_PASSWORD=%s\n' "$(tr -d '\n' <"$passfile")"
+  } >"${state}/camofox.env"
+  chmod 600 "${state}/camofox.env"
+
+  if ! podman image exists "$image" 2>/dev/null; then
+    echo "Pulling ${image} ..."
+    podman pull "$image"
+  fi
+  podman rm -f "$name" 2>/dev/null || true
+  podman run -d --replace \
+    --pod "${HERMES_POD}" \
+    --name "$name" \
+    --restart always \
+    --env-file "${state}/camofox.env" \
+    -v "${state}:/root/.camofox:rw${z}" \
+    "$image"
+  # Camoufox disables the X RENDER extension, which leaves noVNC on a black screen.
+  podman exec "$name" python3 -c '
+from pathlib import Path
+p = Path("/app/node_modules/camoufox-js/dist/virtdisplay.js")
+text = p.read_text()
+old = "\n".join(["            \"-extension\",", "            \"RENDER\","])
+new = "\n".join(["            \"+extension\",", "            \"RENDER\","])
+if old in text:
+    p.write_text(text.replace(old, new, 1))
+    print("render-enabled")
+elif new in text:
+    print("render-already-enabled")
+else:
+    raise SystemExit("virtdisplay.js RENDER flag not found")
+'
+  podman restart "$name" >/dev/null
+
+  # noVNC stays black until a tab paints on the virtual display. Open a landing
+  # page so the operator can sign in without a separate curl.
+  local landing
+  landing="${HERMES_CAMOFOX_LANDING_URL:-}"
+  if [[ -z "$landing" ]]; then
+    landing="$(profile_env_value "$profile" CAMOFOX_LANDING_URL "")"
+  fi
+  if [[ -z "$landing" && "$profile" == "default" ]]; then
+    landing="https://www.linkedin.com/login"
+  fi
+  if [[ -n "$landing" ]]; then
+    local i ok=0
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+      if podman exec "$name" curl -fsS --max-time 3 "http://127.0.0.1:${api_port}/health" >/dev/null 2>&1; then
+        ok=1
+        break
+      fi
+      sleep 1
+    done
+    if [[ "$ok" == "1" ]]; then
+      local landing_json
+      landing_json="$(printf '%s' "$landing" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().rstrip("\n")))')"
+      if podman exec "$name" curl -fsS --max-time 60 \
+        -X POST "http://127.0.0.1:${api_port}/tabs" \
+        -H 'Content-Type: application/json' \
+        -d "{\"userId\":\"hermes\",\"sessionKey\":\"default\",\"url\":${landing_json}}" \
+        >/dev/null; then
+        echo "Camofox [${profile}] opened landing tab: ${landing}"
+      else
+        echo "Warning: Camofox [${profile}] health OK but failed to open landing tab ${landing}" >&2
+      fi
+    else
+      echo "Warning: Camofox [${profile}] did not become healthy in time to open landing tab" >&2
+    fi
+  fi
+
+  if pod_publishes_host_port "${HERMES_POD}" "$novnc"; then
+    echo "Camofox [${profile}] in pod ${HERMES_POD} (API :${api_port}, noVNC 127.0.0.1:${novnc} — tunnel only)"
+  else
+    echo "Camofox [${profile}] in pod ${HERMES_POD} (API :${api_port}; noVNC :${novnc} not published on host — recreate this pod to tunnel)" >&2
+  fi
+}
+
+stop_camofox_container() {
+  local name
+  name="$(camofox_container)"
+  podman stop "$name" 2>/dev/null || true
+  podman rm -f "$name" 2>/dev/null || true
+}
+
 # Auth sidecar shares the gateway network namespace (localhost-only bind). Sidecar
 # intentionally refuses non-loopback hosts — do not use host.containers.internal.
 start_identyclaw_auth_container() {
@@ -328,9 +460,26 @@ cmd_start_pod() {
   fi
 
   if podman pod exists "$HERMES_POD" 2>/dev/null; then
-    join_existing=1
-    echo "Joining existing pod ${HERMES_POD} (profile=${HERMES_PROFILE:-default})"
-  else
+    # Recreate only when we own the pod and Camofox noVNC publishes are incomplete.
+    local can_recreate_pod=0
+    case "$HERMES_POD" in
+      hermes-agent-pod|hermes-*-pod) can_recreate_pod=1 ;;
+    esac
+    if [[ "${HERMES_PROFILE:-default}" != "default" && "$HERMES_POD" == "identyclaw-agents-pod" ]]; then
+      can_recreate_pod=0
+    fi
+    if [[ "$can_recreate_pod" == "1" ]] \
+      && [[ -n "$(profiles_with_camofox_on_pod "$HERMES_POD")" ]] \
+      && ! pod_has_all_camofox_novnc_ports "$HERMES_POD"; then
+      echo "Recreating ${HERMES_POD} to publish Camofox noVNC loopback ports"
+      podman pod rm -f "$HERMES_POD" 2>/dev/null || true
+    else
+      join_existing=1
+      echo "Joining existing pod ${HERMES_POD} (profile=${HERMES_PROFILE:-default})"
+    fi
+  fi
+
+  if [[ "$join_existing" != "1" ]]; then
     # Optional Passport mint-time aliases (e.g. HERMES_EXTRA_INGRESS_PORTS=7443 →
     # host:7443 → container HERMES_INGRESS_PORT). Same nginx TLS listener.
     local pod_ports=(
@@ -361,11 +510,17 @@ cmd_start_pod() {
       fi
     fi
 
+    # Loopback noVNC for every Camofox profile that lives on this pod.
+    append_camofox_pod_publish_args "$HERMES_POD" pod_ports
+
     echo "Creating pod ${HERMES_POD} (ingress ${HERMES_INGRESS_PORT}, API ${HERMES_API_PORT}→${api_listen}) ..."
     podman pod create \
       --name "$HERMES_POD" \
       "${pod_ports[@]}"
   fi
+
+  # Camofox before gateway so the browser API is up when Hermes boots.
+  start_camofox_container
 
   hermes_gateway_run_args args
   args+=(--pod "$HERMES_POD")
@@ -432,6 +587,7 @@ cmd_start_one() {
   # Host-owned writes before prepare_app_for_container (which chowns to hermes 10000).
   # Sync secrets into .env for --env-file; never inject them as -e KEY=value.
   sync_gateway_env_file || true
+  ensure_camofox_gateway_env || true
 
   if hermes_is_pod_mode; then
     require_pod_webhook_env
@@ -440,6 +596,7 @@ cmd_start_one() {
     export WEBHOOK_PORT="${WEBHOOK_PORT:-8644}"
     # Ensure toggles land in .env after pod-mode defaults.
     sync_gateway_env_file || true
+    ensure_camofox_gateway_env || true
     ensure_webhook_pod_layout
     # Skip self-signed generation when joining a pod that already has shared certs.
     if [[ ! -s "$(hermes_app_dir)/certs/fullchain.pem" ]] \
@@ -1153,6 +1310,26 @@ cmd_status() {
         --format '  {{.Names}}  {{.Status}}  {{.Ports}}' || true
     else
       echo "  (gateway not running)"
+    fi
+    if profile_camofox_enabled "$t"; then
+      local camo novnc state
+      camo="$(profile_camofox_container "$t")"
+      novnc="$(profile_camofox_novnc_port "$t")"
+      state="$(profile_camofox_state "$t")"
+      if container_is_running "$camo"; then
+        podman ps --filter "name=^${camo}$" \
+          --format '  {{.Names}}  {{.Status}}' || true
+        if pod_publishes_host_port "${HERMES_POD}" "$novnc"; then
+          echo "  Camofox noVNC: http://127.0.0.1:${novnc}/vnc.html (tunnel; password in ${state}/vnc-password)"
+        else
+          echo "  Camofox noVNC: :${novnc} not on host loopback (API still in-pod; recreate owned pod to tunnel)"
+        fi
+        echo "  Camofox API:  ${HERMES_CAMOFOX_URL:-http://127.0.0.1:$(profile_camofox_api_port "$t")} (pod-local)"
+      else
+        echo "  Camofox: enabled but not running"
+      fi
+    else
+      echo "  Camofox: disabled (set $(profile_env_prefix "$t")_CAMOFOX=1 in fleet env.local)"
     fi
   done
 }

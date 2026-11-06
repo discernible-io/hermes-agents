@@ -1409,6 +1409,14 @@ stop_hermes_pod_stack() {
   podman rm -f "$auth_name" 2>/dev/null || true
   podman stop "$name" 2>/dev/null || true
   podman rm -f "$name" 2>/dev/null || true
+  # Per-profile Camofox: always drop this profile's sidecar. Owned-pod rm below
+  # would remove it too; joiners (Olivia / Cornelius) need an explicit rm.
+  if command -v profile_camofox_container >/dev/null 2>&1; then
+    local camo
+    camo="$(profile_camofox_container "${HERMES_PROFILE:-default}")"
+    podman stop "$camo" 2>/dev/null || true
+    podman rm -f "$camo" 2>/dev/null || true
+  fi
   # Drop leftover per-profile nginx from the old :8443 cutover.
   if [[ "$share_nginx" == "1" ]]; then
     if [[ "$nginx_name" != "$fleet_nginx" ]]; then
