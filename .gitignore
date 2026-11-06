@@ -5,12 +5,50 @@
 # Hermes session state if a process is pointed at this checkout.
 .hermes/
 
+# --- Secrets / local env (never commit; live in ../hermes-agents-app/) ---
+env.local
+.env
+.env.*
+!.env.example
+
+# --- Accidental runtime state inside the checkout (normally in HERMES_APP_DIR) ---
+**/secrets/
+**/sessions/
+**/memories/
+**/logs/
+**/sandboxes/
+**/pairing/
+**/certs/
+**/bin/
+config.yaml
+config.yaml.bak*
+auth.json
+gateway_state.json
+gateway.lock
+gateway.pid
+webhook_subscriptions.json
+state.db
+state.db-*
+*.db-wal
+*.db-shm
+kanban.db*
+feishu_comment_rules.json
+feishu_comment_pairing.json
+
 __pycache__/
 *.py[cod]
 .pytest_cache/
 node_modules/
 *.sidecar.log
+*.log
+tmp/
+.temp/
+.cache/
 
-.env
-.env.*
-!.env.example
+# --- OS / editors ---
+.DS_Store
+Thumbs.db
+.cursor/
+.vscode/
+*.swp
+*~
