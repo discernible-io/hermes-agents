@@ -32,14 +32,17 @@ Select an account with `-a NAME` / `--account NAME` on helpers, or `himalaya <cm
 ## Preferred helpers (workspace)
 
 ```bash
+sh scripts/himalaya-inbox.sh 10                    # default = agent identity
 sh scripts/himalaya-inbox.sh -a founder 10
 sh scripts/himalaya-read.sh -a linkedin <ID>
 sh scripts/himalaya-send.sh -a github recipient@example.com "Subject" "Body"
+sh scripts/himalaya-send.sh -a founder -b hermes@agenthood.me to@x.com "Subject" "Body"
 sh scripts/himalaya-delete.sh -a founder <ID>
 himalaya account list
 ```
 
-Omit `-a` to use the default account (`__DEFAULT_ACCOUNT__`).
+Omit `-a` to use the default account (`__DEFAULT_ACCOUNT__`, usually the agent identity mailbox).
+Use `-b ADDR` (repeatable) for Bcc.
 
 **Never** use plain `himalaya envelope list` without `--output json` — the table shows names only, not addresses.
 There is **no** `himalaya envelope view` — use `message read` / `himalaya-read.sh`.

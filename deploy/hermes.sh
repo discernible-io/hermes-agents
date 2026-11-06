@@ -1467,47 +1467,101 @@ cmd_himalaya_install() {
   echo "Done. Test with: ./hermes.sh himalaya-test"
 }
 
+# True if NAME is a configured Himalaya account (hermes, founder, …).
+himalaya_is_known_account() {
+  local want="${1:?}" line name
+  while IFS= read -r line; do
+    IFS='|' read -r name _ _ _ <<<"$line"
+    [[ "$name" == "$want" ]] && return 0
+  done < <(himalaya_account_defs 2>/dev/null || true)
+  return 1
+}
+
 cmd_himalaya_password() {
   require_podman
   ensure_app_layout
   load_env
-  local arg="${1:-}"
-  if [[ "$arg" == "--from-infra" || "$arg" == "--import" ]]; then
-    local dir="${HERMES_MAIL_IMPORT_DIR:-}"
-    if [[ -z "$dir" ]]; then
-      # Sibling of hermes-agents by default
-      dir="$(cd "${HERMES_ROOT}/../infra-app/mail" 2>/dev/null && pwd || true)"
-    fi
-    [[ -n "$dir" && -d "$dir" ]] || {
-      echo "usage: ./hermes.sh himalaya-password --from-infra" >&2
-      echo "  set HERMES_MAIL_IMPORT_DIR to infra-app/mail (smtp.env + smtp-password.*)" >&2
-      exit 1
-    }
-    export HERMES_MAIL_IMPORT_DIR="$dir"
-    import_himalaya_passwords_from_dir "$dir"
-    return
-  fi
-  local password="${arg:-${HERMES_MAIL_PASSWORD:-}}"
-  local acct="${2:-}"
+  local arg="${1:-}" acct="" password=""
+  local usage=$'usage:\n  ./hermes.sh himalaya-password              # prompt for default account\n  ./hermes.sh himalaya-password hermes       # prompt for account "hermes"\n  ./hermes.sh himalaya-password --account hermes\n  ./hermes.sh himalaya-password --from-infra\n  ./hermes.sh himalaya-password --password SECRET [--account NAME]'
+
+  case "$arg" in
+    --from-infra|--import)
+      local dir="${HERMES_MAIL_IMPORT_DIR:-}"
+      if [[ -z "$dir" ]]; then
+        dir="$(cd "${HERMES_ROOT}/../infra-app/mail" 2>/dev/null && pwd || true)"
+      fi
+      [[ -n "$dir" && -d "$dir" ]] || {
+        echo "$usage" >&2
+        echo "  set HERMES_MAIL_IMPORT_DIR to infra-app/mail (smtp.env + smtp-password.*)" >&2
+        exit 1
+      }
+      export HERMES_MAIL_IMPORT_DIR="$dir"
+      import_himalaya_passwords_from_dir "$dir"
+      return
+      ;;
+    --account|-a)
+      acct="${2:?account name required}"
+      shift 2 || true
+      # optional --password after --account
+      if [[ "${1:-}" == "--password" || "${1:-}" == "-p" ]]; then
+        password="${2:?}"
+        shift 2 || true
+      fi
+      ;;
+    --password)
+      password="${2:?}"
+      shift 2 || true
+      if [[ "${1:-}" == "--account" || "${1:-}" == "-a" ]]; then
+        acct="${2:?}"
+        shift 2 || true
+      fi
+      ;;
+    --help|-h)
+      echo "$usage"
+      return 0
+      ;;
+    "")
+      ;;
+    *)
+      # Bare name of a known account → prompt for that account (NOT treat as password).
+      if himalaya_is_known_account "$arg"; then
+        acct="$arg"
+      else
+        # Legacy: PASSWORD [ACCOUNT]
+        password="$arg"
+        acct="${2:-}"
+      fi
+      ;;
+  esac
+
+  acct="${acct:-$(himalaya_default_account 2>/dev/null || echo default)}"
+  password="${password:-${HERMES_MAIL_PASSWORD:-}}"
+
   if [[ -z "$password" ]]; then
     if [[ -t 0 ]]; then
-      acct="${acct:-$(himalaya_default_account 2>/dev/null || echo default)}"
       printf "Migadu password for account %s: " "$acct" >&2
       # shellcheck disable=SC2162
       read -rs password
       echo >&2
     else
-      echo "usage: ./hermes.sh himalaya-password [--from-infra | PASSWORD [ACCOUNT]]" >&2
-      echo "  or set HERMES_MAIL_PASSWORD / HERMES_MAIL_IMPORT_DIR in hermes-agents-app/env.local" >&2
+      echo "$usage" >&2
       exit 1
     fi
   fi
-  if [[ -n "$acct" ]]; then
-    write_himalaya_account_secret "$acct" "$password" \
-      "$([[ "$acct" == "$(himalaya_default_account 2>/dev/null || true)" ]] && echo 1 || echo 0)"
-  else
-    write_himalaya_secrets "$password"
+  [[ -n "$password" ]] || {
+    echo "empty password — aborted" >&2
+    exit 1
+  }
+  # Guard the footgun that stored the literal account name as the password.
+  if [[ "$password" == "$acct" ]]; then
+    echo "refusing to store password equal to account name '${acct}'" >&2
+    echo "Run: ./hermes.sh himalaya-password ${acct}" >&2
+    echo "  then paste the Migadu mailbox password at the prompt." >&2
+    exit 1
   fi
+
+  write_himalaya_account_secret "$acct" "$password" \
+    "$([[ "$acct" == "$(himalaya_default_account 2>/dev/null || true)" ]] && echo 1 || echo 0)"
 }
 
 cmd_himalaya_test() {

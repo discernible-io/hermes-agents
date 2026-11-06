@@ -3,10 +3,13 @@
 # Sourced from lib.sh — expects hermes_app_dir, app_shell, container_is_running, etc.
 
 # Mail account lines: name|email|display|is_default (1|0)
-# Sources (first match wins):
-#   1) HERMES_MAIL_IMPORT_DIR + smtp.env (infra-app/mail layout)
-#   2) HERMES_MAIL_ACCOUNTS + HERMES_MAIL_<ACCT>_EMAIL / _FROM_NAME
-#   3) legacy single HERMES_EMAIL
+#
+# Agent identity (HERMES_EMAIL) is always kept when set. Role inboxes from
+# HERMES_MAIL_IMPORT_DIR / HERMES_MAIL_ACCOUNTS are additive — they must not
+# replace or overwrite the agent's own mailbox.
+#
+# Default account: HERMES_MAIL_DEFAULT if set, else the HERMES_EMAIL local-part
+# (e.g. hermes), else first role account / SMTP_DEFAULT.
 # Read KEY from infra-app smtp.env without sourcing (FROM_NAME may be unquoted).
 himalaya_smtp_env_get() {
   local file="${1:?}" key="${2:?}" line val
@@ -22,12 +25,38 @@ himalaya_smtp_env_get() {
   printf '%s\n' "$val"
 }
 
+# Local-part of an email → safe Himalaya account name (hermes@x → hermes).
+himalaya_account_name_from_email() {
+  local email="${1:?}" localpart
+  localpart="${email%%@*}"
+  # tr -cd only (no newline in the pipe) — otherwise a trailing \n becomes "_".
+  localpart="$(printf '%s' "$localpart" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9._-')"
+  printf '%s\n' "${localpart:-mailbox}"
+}
+
 himalaya_account_defs() {
-  local dir accounts default acct email display upper first=1
+  local dir accounts default acct email display upper
+  local -a lines=()
+  local agent_email agent_name agent_display seen=""
+
+  agent_email="${HERMES_EMAIL:-}"
+  agent_display="${HERMES_EMAIL_DISPLAY_NAME:-Hermes Trimegisto}"
+  if [[ -n "$agent_email" ]]; then
+    agent_name="$(himalaya_account_name_from_email "$agent_email")"
+  else
+    agent_name=""
+  fi
+
+  default="${HERMES_MAIL_DEFAULT:-}"
+  # Prefer the agent's own mailbox as default unless operator pinned another.
+  if [[ -z "$default" && -n "$agent_name" ]]; then
+    default="$agent_name"
+  fi
+
+  # 1) Role accounts from infra-app/mail smtp.env
   dir="${HERMES_MAIL_IMPORT_DIR:-}"
   if [[ -n "$dir" && -r "${dir}/smtp.env" ]]; then
     accounts="$(himalaya_smtp_env_get "${dir}/smtp.env" SMTP_ACCOUNTS || true)"
-    default="${HERMES_MAIL_DEFAULT:-}"
     if [[ -z "$default" ]]; then
       default="$(himalaya_smtp_env_get "${dir}/smtp.env" SMTP_DEFAULT || true)"
     fi
@@ -41,29 +70,29 @@ himalaya_account_defs() {
         email="$(himalaya_smtp_env_get "${dir}/smtp.env" "SMTP_${upper}_EMAIL" || true)"
         display="$(himalaya_smtp_env_get "${dir}/smtp.env" "SMTP_${upper}_FROM_NAME" || true)"
         [[ -n "$email" ]] || continue
-        [[ -n "$display" ]] || display="${HERMES_EMAIL_DISPLAY_NAME:-Hermes Trimegisto}"
-        if [[ -z "$default" && "$first" == "1" ]]; then
-          default="$acct"
+        # Skip role row that is the same address as HERMES_EMAIL (dedupe).
+        if [[ -n "$agent_email" && "$email" == "$agent_email" ]]; then
+          continue
         fi
-        if [[ "$acct" == "$default" ]]; then
-          printf '%s|%s|%s|1\n' "$acct" "$email" "$display"
-        else
-          printf '%s|%s|%s|0\n' "$acct" "$email" "$display"
-        fi
-        first=0
+        [[ -n "$display" ]] || display="$agent_display"
+        lines+=("${acct}|${email}|${display}")
+        seen+=",${acct},"
       done
-      return 0
     fi
   fi
 
+  # 2) Explicit HERMES_MAIL_ACCOUNTS (additive with import)
   accounts="${HERMES_MAIL_ACCOUNTS:-}"
   if [[ -n "$accounts" ]]; then
-    default="${HERMES_MAIL_DEFAULT:-}"
     local -a _himalaya_accts=()
+    local key
     IFS=',' read -r -a _himalaya_accts <<<"$accounts"
     for acct in "${_himalaya_accts[@]}"; do
       acct="$(echo "$acct" | tr -d '[:space:]')"
       [[ -n "$acct" ]] || continue
+      case "$seen" in
+        *",${acct},"*) continue ;;
+      esac
       upper="$(echo "$acct" | tr '[:lower:]' '[:upper:]' | tr '-' '_')"
       key="HERMES_MAIL_${upper}_EMAIL"
       email="${!key:-}"
@@ -73,24 +102,43 @@ himalaya_account_defs() {
         echo "himalaya_account_defs: missing HERMES_MAIL_${upper}_EMAIL for ${acct}" >&2
         return 1
       }
-      [[ -n "$display" ]] || display="${HERMES_EMAIL_DISPLAY_NAME:-Hermes Trimegisto}"
-      if [[ -z "$default" && "$first" == "1" ]]; then
-        default="$acct"
+      if [[ -n "$agent_email" && "$email" == "$agent_email" ]]; then
+        continue
       fi
-      if [[ "$acct" == "$default" ]]; then
-        printf '%s|%s|%s|1\n' "$acct" "$email" "$display"
-      else
-        printf '%s|%s|%s|0\n' "$acct" "$email" "$display"
-      fi
-      first=0
+      [[ -n "$display" ]] || display="$agent_display"
+      lines+=("${acct}|${email}|${display}")
+      seen+=",${acct},"
     done
+  fi
+
+  # 3) Agent identity mailbox — always present when HERMES_EMAIL is set
+  if [[ -n "$agent_email" && -n "$agent_name" ]]; then
+    case "$seen" in
+      *",${agent_name},"*) ;;
+      *)
+        lines=("${agent_name}|${agent_email}|${agent_display}" "${lines[@]}")
+        seen+=",${agent_name},"
+        ;;
+    esac
+  fi
+
+  if [[ ${#lines[@]} -eq 0 ]]; then
     return 0
   fi
 
-  email="${HERMES_EMAIL:-}"
-  [[ -n "$email" ]] || return 0
-  display="${HERMES_EMAIL_DISPLAY_NAME:-Hermes Trimegisto}"
-  printf 'default|%s|%s|1\n' "$email" "$display"
+  if [[ -z "$default" ]]; then
+    default="${lines[0]%%|*}"
+  fi
+
+  local line name
+  for line in "${lines[@]}"; do
+    IFS='|' read -r name email display <<<"$line"
+    if [[ "$name" == "$default" ]]; then
+      printf '%s|%s|%s|1\n' "$name" "$email" "$display"
+    else
+      printf '%s|%s|%s|0\n' "$name" "$email" "$display"
+    fi
+  done
 }
 
 himalaya_default_account() {
@@ -111,73 +159,56 @@ himalaya_has_accounts() {
 
 # Write one account password + auth helper under secrets/himalaya/<name>.{pass,sh}.
 # Also mirrors default account to legacy imap.pass/smtp.pass (+ .sh) for older helpers.
+#
+# Passwords are written via a host temp file + podman unshare (never -e env),
+# so characters like ", $, `, ! survive intact.
 write_himalaya_account_secret() {
   local acct="${1:?}"
   local password="${2:?}"
   local is_default="${3:-0}"
-  local app name script z
+  local app dest tmp_pass tmp_sh
   app="$(hermes_app_dir)"
   [[ -n "$password" ]] || {
     echo "write_himalaya_account_secret: empty password for ${acct}" >&2
     return 1
   }
-  name="${HERMES_CONTAINER:-hermes}"
+  dest="${app}/secrets/himalaya"
+  tmp_pass="$(mktemp)"
+  tmp_sh="$(mktemp)"
+  # No trailing newline — IMAP LOGIN rejects control characters.
+  printf '%s' "$password" >"$tmp_pass"
+  printf '%s\n' '#!/bin/sh' "cat /opt/data/secrets/himalaya/${acct}.pass" >"$tmp_sh"
+  chmod 600 "$tmp_pass"
+  chmod 700 "$tmp_sh"
 
-  script=$(cat <<'EOS'
-set -e
-acct="$HERMES_MAIL_ACCT"
-pass="$HERMES_MAIL_PASSWORD"
-def="$HERMES_MAIL_IS_DEFAULT"
-mkdir -p "$HERMES_HOME/secrets/himalaya"
-printf "%s\n" "$pass" >"$HERMES_HOME/secrets/himalaya/${acct}.pass"
-cat >"$HERMES_HOME/secrets/himalaya/${acct}.sh" <<EOF
-#!/bin/sh
-cat /opt/data/secrets/himalaya/${acct}.pass
-EOF
-chmod 700 "$HERMES_HOME/secrets/himalaya"
-chmod 700 "$HERMES_HOME/secrets/himalaya/${acct}.sh"
-chmod 600 "$HERMES_HOME/secrets/himalaya/${acct}.pass"
-if [ "$def" = "1" ] || [ "$acct" = "default" ]; then
-  cp "$HERMES_HOME/secrets/himalaya/${acct}.pass" "$HERMES_HOME/secrets/himalaya/imap.pass"
-  cp "$HERMES_HOME/secrets/himalaya/${acct}.pass" "$HERMES_HOME/secrets/himalaya/smtp.pass"
-  cat >"$HERMES_HOME/secrets/himalaya/imap.sh" <<EOF
-#!/bin/sh
-cat /opt/data/secrets/himalaya/imap.pass
-EOF
-  cp "$HERMES_HOME/secrets/himalaya/imap.sh" "$HERMES_HOME/secrets/himalaya/smtp.sh"
-  chmod 700 "$HERMES_HOME/secrets/himalaya/imap.sh" "$HERMES_HOME/secrets/himalaya/smtp.sh"
-  chmod 600 "$HERMES_HOME/secrets/himalaya/imap.pass" "$HERMES_HOME/secrets/himalaya/smtp.pass"
-fi
-EOS
-)
-
-  if container_is_running "$name"; then
-    if ! podman exec -u hermes \
-      -e "HERMES_HOME=${app}" \
-      -e "HERMES_MAIL_ACCT=${acct}" \
-      -e "HERMES_MAIL_PASSWORD=${password}" \
-      -e "HERMES_MAIL_IS_DEFAULT=${is_default}" \
-      "$name" sh -c "$script"; then
-      echo "write_himalaya_account_secret: failed in running container (${acct})" >&2
-      return 1
+  if ! podman unshare bash -c "
+    set -euo pipefail
+    dest=$(printf '%q' "$dest")
+    acct=$(printf '%q' "$acct")
+    def=$(printf '%q' "$is_default")
+    src_pass=$(printf '%q' "$tmp_pass")
+    src_sh=$(printf '%q' "$tmp_sh")
+    mkdir -p \"\$dest\"
+    cp \"\$src_pass\" \"\$dest/\${acct}.pass\"
+    cp \"\$src_sh\" \"\$dest/\${acct}.sh\"
+    chmod 700 \"\$dest\" \"\$dest/\${acct}.sh\"
+    chmod 600 \"\$dest/\${acct}.pass\"
+    if [ \"\$def\" = 1 ] || [ \"\$acct\" = default ]; then
+      cp \"\$dest/\${acct}.pass\" \"\$dest/imap.pass\"
+      cp \"\$dest/\${acct}.pass\" \"\$dest/smtp.pass\"
+      printf '%s\n' '#!/bin/sh' 'cat /opt/data/secrets/himalaya/imap.pass' >\"\$dest/imap.sh\"
+      cp \"\$dest/imap.sh\" \"\$dest/smtp.sh\"
+      chmod 700 \"\$dest/imap.sh\" \"\$dest/smtp.sh\"
+      chmod 600 \"\$dest/imap.pass\" \"\$dest/smtp.pass\"
     fi
-  else
-    z="$(selinux_mount_suffix)"
-    prepare_app_for_container
-    if ! podman run --rm \
-      --user 10000:10000 \
-      -v "${app}:${app}:rw${z}" \
-      -e "HERMES_HOME=${app}" \
-      -e "HERMES_MAIL_ACCT=${acct}" \
-      -e "HERMES_MAIL_PASSWORD=${password}" \
-      -e "HERMES_MAIL_IS_DEFAULT=${is_default}" \
-      --entrypoint sh \
-      "${HERMES_IMAGE:-docker.io/nousresearch/hermes-agent:latest}" \
-      -c "$script"; then
-      echo "write_himalaya_account_secret: failed (${acct})" >&2
-      return 1
-    fi
+    owner=\$(stat -c '%u' \"\$(dirname \"\$dest\")\" 2>/dev/null || echo 10000)
+    chown -R \"\$owner:\$owner\" \"\$dest\"
+  "; then
+    rm -f "$tmp_pass" "$tmp_sh"
+    echo "write_himalaya_account_secret: failed (${acct})" >&2
+    return 1
   fi
+  rm -f "$tmp_pass" "$tmp_sh"
   echo "Wrote secret for account ${acct}"
 }
 
@@ -191,29 +222,51 @@ write_himalaya_secrets() {
 }
 
 # Copy Migadu passwords from infra-app/mail (smtp-password.<acct>) into hermes secrets.
+# Only touches accounts that have a matching smtp-password.* in that dir — never
+# overwrites the agent identity secret (hermes.pass / imap.pass) from role imports.
 # Does not print password material.
 import_himalaya_passwords_from_dir() {
   local dir="${1:-${HERMES_MAIL_IMPORT_DIR:-}}"
-  local line acct email display def src password missing=0
+  local line acct email display def src password missing=0 imported=0
+  local agent_name=""
   [[ -n "$dir" && -d "$dir" ]] || {
     echo "import_himalaya_passwords_from_dir: need HERMES_MAIL_IMPORT_DIR (got: ${dir:-empty})" >&2
     return 1
   }
+  if [[ -n "${HERMES_EMAIL:-}" ]]; then
+    agent_name="$(himalaya_account_name_from_email "$HERMES_EMAIL")"
+  fi
   while IFS= read -r line; do
     IFS='|' read -r acct email display def <<<"$line"
+    # Agent identity is not stored under infra-app/mail — skip (keep existing secret).
+    if [[ -n "$agent_name" && "$acct" == "$agent_name" ]]; then
+      continue
+    fi
     src="${dir}/smtp-password.${acct}"
     if [[ ! -r "$src" ]]; then
       if [[ "$def" == "1" && -r "${dir}/smtp-password" ]]; then
         src="${dir}/smtp-password"
       else
-        echo "Missing ${dir}/smtp-password.${acct}" >&2
+        echo "Missing ${dir}/smtp-password.${acct} (skip ${acct})" >&2
         missing=1
         continue
       fi
     fi
     password="$(tr -d '\r\n' <"$src")"
+    # Role imports must never claim default/legacy imap.pass when agent mailbox exists.
+    if [[ -n "$agent_name" && "$acct" != "$agent_name" ]]; then
+      def=0
+    fi
     write_himalaya_account_secret "$acct" "$password" "$def" || return 1
+    imported=$((imported + 1))
   done < <(himalaya_account_defs)
+  echo "Imported ${imported} role mailbox secret(s) from ${dir}"
+  if [[ -n "$agent_name" ]] && ! app_shell "test -s \"\$HERMES_HOME/secrets/himalaya/${agent_name}.pass\"" \
+    && ! app_shell "test -s \"\$HERMES_HOME/secrets/himalaya/imap.pass\""; then
+    echo "Note: ${agent_name} (@ agent identity) password missing — run:" >&2
+    echo "  ./hermes.sh himalaya-password   # then paste Migadu password for ${HERMES_EMAIL}" >&2
+  fi
+  # missing role files is a hard error; missing agent identity is a note only
   [[ "$missing" == "0" ]] || return 1
 }
 
@@ -443,15 +496,18 @@ himalaya_test() {
   for line in "${lines[@]}"; do
     IFS='|' read -r acct _ _ _ <<<"$line"
     if [[ "$acct" == "default" ]]; then
-      if ! app_shell "test -f \"\$HERMES_HOME/secrets/himalaya/imap.pass\""; then
+      if ! app_shell "test -s \"\$HERMES_HOME/secrets/himalaya/imap.pass\""; then
         echo "mail password missing for ${acct} — run: ./hermes.sh himalaya-password" >&2
         return 1
       fi
+    elif app_shell "test -s \"\$HERMES_HOME/secrets/himalaya/${acct}.pass\""; then
+      :
+    elif [[ -n "${HERMES_MAIL_IMPORT_DIR:-}" && -r "${HERMES_MAIL_IMPORT_DIR}/smtp-password.${acct}" ]]; then
+      echo "mail password missing for ${acct} — run: ./hermes.sh himalaya-password --from-infra" >&2
+      return 1
     else
-      if ! app_shell "test -f \"\$HERMES_HOME/secrets/himalaya/${acct}.pass\""; then
-        echo "mail password missing for ${acct} — run: ./hermes.sh himalaya-password --from-infra" >&2
-        return 1
-      fi
+      echo "mail password missing for ${acct} — run: ./hermes.sh himalaya-password   # Migadu password for that mailbox" >&2
+      return 1
     fi
     accounts_csv+="${acct},"
   done

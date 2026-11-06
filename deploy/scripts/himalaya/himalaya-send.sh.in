@@ -1,12 +1,21 @@
 #!/bin/sh
 # Headless outbound mail via Himalaya (no $EDITOR).
-# Usage: sh scripts/himalaya-send.sh [-a ACCOUNT] TO SUBJECT [BODY]
+# Usage: sh scripts/himalaya-send.sh [-a ACCOUNT] [-b BCC]... TO SUBJECT [BODY]
 set -eu
 ACCOUNT="__DEFAULT_ACCOUNT__"
+BCC=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -a|--account)
       ACCOUNT="${2:?}"
+      shift 2
+      ;;
+    -b|--bcc)
+      if [ -n "$BCC" ]; then
+        BCC="${BCC}, ${2:?}"
+      else
+        BCC="${2:?}"
+      fi
       shift 2
       ;;
     *)
@@ -14,8 +23,8 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
-TO="${1:?usage: himalaya-send.sh [-a ACCOUNT] TO SUBJECT [BODY]}"
-SUBJECT="${2:?usage: himalaya-send.sh [-a ACCOUNT] TO SUBJECT [BODY]}"
+TO="${1:?usage: himalaya-send.sh [-a ACCOUNT] [-b BCC]... TO SUBJECT [BODY]}"
+SUBJECT="${2:?usage: himalaya-send.sh [-a ACCOUNT] [-b BCC]... TO SUBJECT [BODY]}"
 BODY="${3:-}"
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
@@ -63,10 +72,12 @@ then
   exit 75
 fi
 
-himalaya message send -a "$ACCOUNT" <<MAIL
-From: ${DISPLAY_NAME} <${EMAIL}>
-To: ${TO}
-Subject: ${SUBJECT}
-
-${BODY}
-MAIL
+{
+  printf 'From: %s <%s>\n' "$DISPLAY_NAME" "$EMAIL"
+  printf 'To: %s\n' "$TO"
+  if [ -n "$BCC" ]; then
+    printf 'Bcc: %s\n' "$BCC"
+  fi
+  printf 'Subject: %s\n' "$SUBJECT"
+  printf '\n%s\n' "$BODY"
+} | himalaya message send -a "$ACCOUNT"

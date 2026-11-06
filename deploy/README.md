@@ -249,18 +249,22 @@ Agent mailbox(es) for read/write from terminal sandboxes (not the Email gateway 
 When mailboxes already live under `../infra-app/mail` (`smtp.env` + `smtp-password.*`):
 
 ```bash
-# in hermes-agents-app/env.local
+# in hermes-agents-app/env.local — default profile only
 HERMES_MAIL_IMPORT_DIR=/home/dedalo43/infra-app/mail
 # optional: HERMES_MAIL_DEFAULT=founder
+# Do NOT set AGENT_C_MAIL_IMPORT_DIR / AGENT_B_MAIL_IMPORT_DIR unless that
+# agent should also own those role inboxes.
 
-./hermes.sh himalaya-install          # config + copy passwords from infra-app
-./hermes.sh himalaya-test
-./hermes.sh start                     # refreshes docker_volumes + SMTP IPv4 pin
+./hermes.sh -p default himalaya-install   # config + copy passwords from infra-app
+./hermes.sh -p default himalaya-test
+./hermes.sh -p default start              # refreshes docker_volumes + SMTP IPv4 pin
 ```
 
-Or import passwords later: `./hermes.sh himalaya-password --from-infra`.
+Or import passwords later: `./hermes.sh -p default himalaya-password --from-infra`.
 
-Himalaya gets one account per `SMTP_ACCOUNTS` entry (e.g. `github`, `founder`, `linkedin`) with the same From display names as infra-app. Helpers take `-a ACCOUNT`.
+**Isolation:** each profile has its own `HERMES_HOME` (`hermes-agents-app/` vs `homes/<id>/`). Secrets and Himalaya config live only under that home; sandboxes mount that home’s `secrets/` only. Fleet `HERMES_MAIL_IMPORT_DIR` applies to the default profile; other profiles need an explicit `AGENT_*_MAIL_IMPORT_DIR` or they keep their own `AGENT_*_EMAIL` mailbox.
+
+Himalaya keeps **`HERMES_EMAIL` (agent identity)** as its own account (default) and adds one account per `SMTP_ACCOUNTS` entry (e.g. `github`, `founder`, `linkedin`) with the same From display names as infra-app. Role import never overwrites the agent mailbox password. Helpers take `-a ACCOUNT`; send supports `-b BCC`.
 
 ### Single mailbox (legacy)
 

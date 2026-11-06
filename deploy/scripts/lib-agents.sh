@@ -278,6 +278,24 @@ select_profile() {
   [[ -n "$v" ]] && export HERMES_SMTP_PORT="$v"
   v="$(profile_env_value "$id" SMTP_ENCRYPTION "${HERMES_SMTP_ENCRYPTION:-}")"
   [[ -n "$v" ]] && export HERMES_SMTP_ENCRYPTION="$v"
+  # Mail import / multi-account lists are profile-scoped. A fleet
+  # HERMES_MAIL_IMPORT_DIR must NOT leak into olivia/cornelius on start —
+  # only default sees bare HERMES_MAIL_* via profile_env_value fallback;
+  # other profiles need AGENT_C_MAIL_IMPORT_DIR (etc.) explicitly.
+  v="$(profile_env_value "$id" MAIL_IMPORT_DIR "")"
+  export HERMES_MAIL_IMPORT_DIR="$v"
+  v="$(profile_env_value "$id" MAIL_ACCOUNTS "")"
+  export HERMES_MAIL_ACCOUNTS="$v"
+  v="$(profile_env_value "$id" MAIL_DEFAULT "")"
+  export HERMES_MAIL_DEFAULT="$v"
+  v="$(profile_env_value "$id" MAIL_PASSWORD "")"
+  # Only override when profile-specific; leave unset otherwise so
+  # ensure_himalaya does not wipe secrets with an empty password.
+  if [[ -n "$v" ]]; then
+    export HERMES_MAIL_PASSWORD="$v"
+  else
+    unset HERMES_MAIL_PASSWORD || true
+  fi
   v="$(profile_env_value "$id" A2A_PORT "${A2A_PORT:-}")"
   [[ -n "$v" ]] && export A2A_PORT="$v"
   v="$(profile_env_value "$id" AUTH_PORT "${IDENTYCLAW_AUTH_PORT:-}")"
