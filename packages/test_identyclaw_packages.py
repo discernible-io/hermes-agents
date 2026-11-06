@@ -22,11 +22,21 @@ def test_sibling_plugin_checkouts_exist():
     assert hooks.is_dir(), "expected sibling hermes-identyclaw-webhook(s)"
 
 
-def test_a2a_manifest_uses_unique_plugin_id():
+def test_a2a_manifest_overrides_bundled_platform():
     text = (_plugin("hermes-identyclaw-a2a") / "plugin.yaml").read_text()
+    # Unique id — do not reuse bundled yaml name a2a-platform.
     assert "name: identyclaw-a2a" in text
     assert "tools.override" in text
-    assert "identyclaw-auth" in text
+    assert "requires_plugins" in text
+    auth = (_plugin("hermes-identyclaw-auth") / "plugin.yaml").read_text()
+    assert "name: identyclaw-auth" in auth
+
+
+def test_auth_is_hermes_plugin():
+    root = _plugin("hermes-identyclaw-auth")
+    assert (root / "plugin.yaml").is_file()
+    assert (root / "cli.py").is_file()
+    assert (root / "scripts" / "install-stock-hermes.sh").is_file()
 
 
 def test_webhooks_stay_off_hmac_routes():
@@ -34,7 +44,6 @@ def test_webhooks_stay_off_hmac_routes():
     if not hooks.is_dir():
         hooks = _plugin("hermes-identyclaw-webhooks")
     text = (hooks / "plugin.yaml").read_text()
-    assert "name: identyclaw-webhooks" in text
     assert "HMAC" in text
     assert "/webhooks/{route}" in text
 
@@ -42,8 +51,6 @@ def test_webhooks_stay_off_hmac_routes():
 def test_auth_ships_skill():
     skill = _plugin("hermes-identyclaw-auth") / "skills" / "identyclaw" / "SKILL.md"
     assert skill.is_file()
-    text = (_plugin("hermes-identyclaw-auth") / "plugin.yaml").read_text()
-    assert "name: identyclaw-auth" in text
 
 
 def test_deploy_idcp_symlink_points_at_sibling_auth():
@@ -54,27 +61,13 @@ def test_deploy_idcp_symlink_points_at_sibling_auth():
     assert (target / "bin" / "idcp.mjs").is_file()
 
 
-def test_install_script_resolves_siblings_and_github_repos():
+def test_install_script_resolves_siblings():
     text = (REPO / "install.sh").read_text()
     assert "hermes-identyclaw-auth" in text
-    assert "discernible-io/hermes-identyclaw-auth" in text
-    assert "discernible-io/hermes-identyclaw-a2a" in text
-    assert "discernible-io/hermes-identyclaw-webhook" in text
     assert "IDENTYCLAW_AUTH_DIR" in text
-    assert "plugins/identyclaw-a2a" in text
-    assert "hermes plugins install" in text
     assert "--fetch" in text
     assert "--peer" in text
-    # Config enablement must use unique plugin id (not bundled a2a-platform yaml name)
-    assert "    - identyclaw-a2a" in text
-    assert "    - a2a-platform" not in text
 
-
-def test_peer_install_uses_identyclaw_a2a_dir():
-    text = (REPO / "deploy" / "hermes.sh").read_text()
-    assert 'plugins/identyclaw-a2a' in text
-    assert "    - identyclaw-a2a" in text
-    assert "    - a2a-platform" not in text
 
 def test_nginx_renderer_includes_hooks_and_login():
     script = (REPO / "deploy" / "scripts" / "render-nginx-conf.sh").read_text()

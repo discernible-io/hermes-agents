@@ -836,16 +836,20 @@ hermes_is_pod_mode() {
 }
 
 require_pod_webhook_env() {
-  local missing=() envf
+  local missing=() envf secret_ok=0
   [[ -n "${HERMES_PUBLIC_HOST:-}" ]] || missing+=("HERMES_PUBLIC_HOST")
   [[ -n "${HERMES_INGRESS_PORT:-}" ]] || missing+=("HERMES_INGRESS_PORT")
   if [[ -z "${WEBHOOK_SECRET:-}" ]]; then
     envf="$(hermes_gateway_env_file)"
     if [[ -r "$envf" ]] && grep -qE '^WEBHOOK_SECRET=.+' "$envf" 2>/dev/null; then
-      :
-    else
-      missing+=("WEBHOOK_SECRET")
+      secret_ok=1
+    elif container_is_running "${HERMES_DEFAULT_CONTAINER:-hermes}" 2>/dev/null \
+      && podman exec "${HERMES_DEFAULT_CONTAINER:-hermes}" \
+        sh -c 'grep -qE "^WEBHOOK_SECRET=.+" /opt/data/.env' 2>/dev/null; then
+      # Fleet .env is UID-10000 while gateway runs; nginx render only needs presence.
+      secret_ok=1
     fi
+    [[ "$secret_ok" == "1" ]] || missing+=("WEBHOOK_SECRET")
   fi
   if [[ ${#missing[@]} -gt 0 ]]; then
     echo "Pod mode requires: ${missing[*]}" >&2
