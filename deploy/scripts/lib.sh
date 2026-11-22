@@ -217,21 +217,39 @@ restore_app_ownership() {
   podman unshare chown -R 0:0 "$app" 2>/dev/null || true
 }
 
+# Gateway often chmod 700's HERMES_HOME after boot. When the fleet root is also
+# the default profile home, that blocks host traversal into homes/<profile>
+# during `./hermes.sh -p all start`. Keep other+x on the fleet root only.
+ensure_fleet_root_traversable() {
+  local fleet
+  fleet="$(hermes_fleet_dir)"
+  [[ -d "${fleet}/homes" ]] || return 0
+  podman unshare chmod 711 "$fleet" 2>/dev/null || true
+}
+
 # Give the container hermes UID (10000) the app tree so it can create runtime files.
 # Call before start / one-shot CLI. Host reclaim happens on stop.
 # Critical: HERMES_HOME/.env is mode 0600 — if owned by host-root (0), hermes cannot
 # even stat it and chat crashes with PermissionError.
 prepare_app_for_container() {
-  local app fleet
+  local app fleet clear_gateway_locks=1
   app="$(hermes_app_dir)"
   fleet="$(hermes_fleet_dir)"
   [[ -d "$app" ]] || return 0
+  # Never delete gateway.lock/pid while this profile's container is live —
+  # chat/exec call prepare right before podman exec and that used to race the
+  # running gateway (and push the next chat into a broken ephemeral path).
+  if container_is_running "${HERMES_CONTAINER:-hermes}"; then
+    clear_gateway_locks=0
+  fi
   # Drop stale locks from interrupted setup/gateway (often root-owned under userns).
   # When preparing the fleet/default home, never recurse into homes/ (other profiles).
   if ! podman unshare bash -c "
     cd $(printf '%q' "$app") || exit 1
-    rm -f gateway.lock gateway.pid \
-      kanban.db.init.lock kanban.db.dispatch.lock \
+    if [ $(printf '%q' "$clear_gateway_locks") = 1 ]; then
+      rm -f gateway.lock gateway.pid 2>/dev/null || true
+    fi
+    rm -f kanban.db.init.lock kanban.db.dispatch.lock \
       kanban.db-wal kanban.db-shm 2>/dev/null || true
     # Directory + contents must be hermes (10000), not host-root-mapped UID 0.
     # Exclude certs/ — nginx (UID 101) needs ownership; normalize_tls_certs handles it.
@@ -275,9 +293,12 @@ clear_gateway_runtime_state() {
 }
 
 container_is_running() {
-  local name="${1:-}"
+  local name="${1:-}" state
   [[ -n "$name" ]] || return 1
-  podman ps --format '{{.Names}}' | grep -qx "$name"
+  # Prefer inspect over `ps | grep` — pipefail+grep false-negatives under
+  # concurrent podman use, and name-prefix collisions are easy to get wrong.
+  state="$(podman inspect -f '{{.State.Running}}' "$name" 2>/dev/null || true)"
+  [[ "$state" == "true" ]]
 }
 
 # One-shot hermes CLI without s6 (avoids gateway starting during setup/chat).

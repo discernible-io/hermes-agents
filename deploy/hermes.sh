@@ -584,6 +584,10 @@ cmd_start_one() {
   # Rootless Podman: linger so pods survive SSH/Cursor logout (SKIP_LINGER=1 to skip).
   bash "${HERMES_ROOT}/scripts/ensure-podman-linger.sh" || true
 
+  # Default profile may already be running (mode 700 on fleet root) when we start
+  # named homes/<id> profiles in the same -p all pass.
+  ensure_fleet_root_traversable || true
+
   # Host-owned writes before prepare_app_for_container (which chowns to hermes 10000).
   # Sync secrets into .env for --env-file; never inject them as -e KEY=value.
   sync_gateway_env_file || true
@@ -642,6 +646,8 @@ cmd_start_one() {
   ensure_sandbox_volumes
   # Optional Migadu mail (when HERMES_EMAIL is set in env.local).
   ensure_himalaya || echo "Warning: himalaya setup incomplete" >&2
+  # Re-assert after gateway boot may have tightened HERMES_HOME to 0700.
+  ensure_fleet_root_traversable || true
   echo "App dir owned by container hermes UID while running; use ./hermes.sh stop to reclaim for host edits."
   if hermes_is_pod_mode; then
     podman ps --filter "pod=${HERMES_POD}" --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
