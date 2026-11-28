@@ -1,0 +1,43 @@
+name: identyclaw-auth
+title: IdentyClaw Auth
+repo: https://github.com/discernible-io/hermes-identyclaw-auth
+sha: 402ac73532065ee977a2eb3e39d1a9e0be33c0dd
+version: "0.3.0"
+description: >-
+  Passport identity for Hermes: enroll a NEAR account, host-login JWT sessions,
+  HOLA peer handshake, and detached file hash/sign/verify (identyclaw.filesign.v1).
+  Bundles the identyclaw skill, hermes identyclaw CLI, and a localhost Node RODiT
+  sidecar used by the optional identyclaw-a2a and identyclaw-webhooks peer plugins.
+  Disclosure — after install run `hermes identyclaw install-deps` (npm ci in the
+  plugin directory; needs Node ≥22.19); may create one NEAR implicit account under
+  $HERMES_HOME/secrets/near-credentials/ and cache API JWTs under
+  $HERMES_HOME/secrets/identyclaw/; HTTPS calls to https://api.identyclaw.com
+  (login, holanonce, HOLA verify, filesign api-pubkey/check-hmac, identity) and
+  NEAR RPC via vendored clients; optional session-start hook can spawn a Node
+  sidecar on 127.0.0.1:9910 when NEAR credentials exist (IDENTYCLAW_SIDECAR_AUTOSTART);
+  private keys stay on the host and are never sent to the API; Passport mint is a
+  human checkout at purchase.identyclaw.com; no telemetry.
+maintainer: discernible-io
+tier: community
+category: tools
+docs_url: https://github.com/discernible-io/hermes-identyclaw-auth#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - identyclaw_enroll
+    - identyclaw_ensure_session
+    - identyclaw_logout
+    - identyclaw_me
+    - identyclaw_list_sessions
+    - identyclaw_request
+    - identyclaw_create_hola
+    - identyclaw_verify_hola
+    - identyclaw_hash_file
+    - identyclaw_sign_file
+    - identyclaw_verify_file
+    - identyclaw_sidecar_status
+  provides_hooks:
+    - on_session_start
+  provides_middleware: []
+  requires_env: []

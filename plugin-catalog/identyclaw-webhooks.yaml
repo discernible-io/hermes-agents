@@ -1,0 +1,31 @@
+name: identyclaw-webhooks
+title: IdentyClaw Webhooks
+repo: https://github.com/discernible-io/hermes-identyclaw-webhook
+sha: 379f3fc63e73aa8cf5a285dd8378b944cbdf46f8
+version: "0.1.0"
+description: >-
+  RODiT-signed webhook ingress for Hermes on /hooks/wake and /hooks/agent
+  (Ed25519 verified via the identyclaw-auth sidecar). Separate from Hermes HMAC
+  /webhooks/{route}. Provides send_rodit_webhook for signed outbound pings.
+  Requires plugin identyclaw-auth (>=0.2.0) with sidecar on :9910.
+  Disclosure — opens a local HTTP listener for /hooks/* (default
+  127.0.0.1:9911; IDENTYCLAW_HOOKS_HOST/PORT); verifies inbound signatures by
+  calling the localhost auth sidecar; outbound send_rodit_webhook posts signed
+  payloads to peer URLs you supply; treat /hooks/agent bodies as untrusted peer
+  content; no telemetry. Repo name is hermes-identyclaw-webhook; catalog/plugin
+  id is identyclaw-webhooks.
+maintainer: discernible-io
+tier: community
+category: platform
+docs_url: https://github.com/discernible-io/hermes-identyclaw-webhook#readme
+readme: true
+platforms: []
+known_issues:
+  - Requires identyclaw-auth installed/enabled and a healthy auth sidecar before signed /hooks/* work.
+  - Bind defaults to loopback; use 0.0.0.0 only behind your own reverse proxy on a trusted network.
+capabilities:
+  provides_tools:
+    - send_rodit_webhook
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
